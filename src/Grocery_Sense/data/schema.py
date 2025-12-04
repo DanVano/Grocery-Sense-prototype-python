@@ -8,7 +8,7 @@ from typing import Optional
 from pathlib import Path
 import sqlite3
 
-from .connection import get_connection
+from grocery_sense.data.connection import get_connection
 
 
 def create_tables(conn: sqlite3.Connection) -> None:

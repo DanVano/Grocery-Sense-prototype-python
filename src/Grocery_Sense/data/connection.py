@@ -5,45 +5,42 @@ SQLite connection utilities for the Price app backend.
 Stores the database inside src/pricebrain/data/db/
 """
 
+# src/grocery_sense/data/connection.py
+
+from __future__ import annotations
+
+import sqlite3
 from pathlib import Path
 from typing import Optional
-import sqlite3
-import os
 
-# The name of your DB file
-DB_FILENAME = "pricebrain.db"
+# Name of the SQLite file
+DB_FILENAME = "grocery_sense.db"
 
 
-def get_db_directory() -> Path:
+def get_db_path(base_dir: Optional[Path] = None) -> Path:
     """
-    Returns the path to the database folder:
-        src/pricebrain/data/db/
-    Creates it if it doesn't exist.
+    Return the full path to the DB file.
+
+    If base_dir is None, we put the DB inside the 'db' directory next to this file:
+        src/grocery_sense/data/db/grocery_sense.db
     """
-    base_dir = Path(__file__).resolve().parent  # .../pricebrain/data
-    db_dir = base_dir / "db"
+    if base_dir is None:
+        base_dir = Path(__file__).resolve().parent / "db"
+    else:
+        base_dir = Path(base_dir)
 
-    if not db_dir.exists():
-        os.makedirs(db_dir, exist_ok=True)
-
-    return db_dir
+    base_dir.mkdir(parents=True, exist_ok=True)
+    return base_dir / DB_FILENAME
 
 
-def get_db_path() -> Path:
+def get_connection(base_dir: Optional[Path] = None) -> sqlite3.Connection:
     """
-    Path to the SQLite database file.
-    Example:
-        src/pricebrain/data/db/pricebrain.db
-    """
-    return get_db_directory() / DB_FILENAME
+    Open a SQLite connection to our DB.
 
-
-def get_connection() -> sqlite3.Connection:
+    base_dir is optional; if not provided, we use the default 'db' directory.
     """
-    Opens a SQLite connection with foreign keys enabled.
-    Always use this instead of sqlite3.connect().
-    """
-    db_path = get_db_path()
+    db_path = get_db_path(base_dir)
     conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA foreign_keys = ON;")
+    conn.row_factory = sqlite3.Row  # nicer dict-like access
     return conn
+
