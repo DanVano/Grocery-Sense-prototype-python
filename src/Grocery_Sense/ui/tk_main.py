@@ -21,14 +21,8 @@ import traceback
 import tkinter as tk
 from tkinter import ttk
 from tkinter.scrolledtext import ScrolledText
-from typing import Optional
 
-from Grocery_Sense.data.connection import get_connection
 from Grocery_Sense.data.schema import initialize_database
-
-from Grocery_Sense.data.repositories.items_repo import ItemsRepository
-from Grocery_Sense.data.repositories.stores_repo import StoresRepository
-from Grocery_Sense.data.repositories.shopping_list_repo import ShoppingListRepository
 
 from Grocery_Sense.services.shopping_list_service import ShoppingListService
 from Grocery_Sense.services.meal_suggestion_service import (
@@ -53,23 +47,15 @@ class GrocerySenseApp(tk.Tk):
 
         # --- DB + services wiring -----------------------------------------
         initialize_database()
-        self.conn = get_connection()
 
-        self.stores_repo = StoresRepository(self.conn)
-        self.items_repo = ItemsRepository(self.conn)
-        self.sl_repo = ShoppingListRepository(self.conn)
-
-        self.shopping_list_service = ShoppingListService(
-            self.sl_repo,
-            self.stores_repo,
-        )
+        # Services (repositories are used internally by the services / repo modules)
+        self.shopping_list_service = ShoppingListService()
         self.meal_suggestion_service = MealSuggestionService(
             price_history_service=None  # wire real one later
         )
         self.weekly_planner_service = WeeklyPlannerService(
             meal_suggestion_service=self.meal_suggestion_service,
             shopping_list_service=self.shopping_list_service,
-            items_repo=self.items_repo,
         )
 
         # --- Layout -------------------------------------------------------
@@ -116,79 +102,42 @@ class GrocerySenseApp(tk.Tk):
 
         ttk.Button(
             frame,
-            text="4) Build Weekly Plan (and add to list)",
+            text="4) Build Weekly Plan",
             command=self._safe_call(self._open_weekly_plan_window),
             width=35,
         ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
-
-        ttk.Button(
-            frame,
-            text="Exit",
-            command=self.destroy,
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=(10, 0))
 
     def _build_log_panel(self) -> None:
-        """
-        Bottom log/output panel where we print status and errors.
-        """
-        label = ttk.Label(self, text="Log / Output:")
-        label.pack(side=tk.TOP, anchor="w", padx=10)
-
-        self.log_text = ScrolledText(self, height=12, state=tk.NORMAL)
-        self.log_text.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
-
-        self._log("Grocery Sense UI started.")
-
-    # ------------------------------------------------------------------
-    # Logging / error handling
-    # ------------------------------------------------------------------
+        self.log_box = ScrolledText(self, state=tk.NORMAL, height=10)
+        self.log_box.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=False, padx=10, pady=10)
+        self._log("Log initialized.")
 
     def _log(self, message: str) -> None:
-        """
-        Append a line to the log panel and also print to stdout.
-        """
-        print(message)
-        self.log_text.insert(tk.END, message + "\n")
-        self.log_text.see(tk.END)
+        self.log_box.insert(tk.END, message + "\n")
+        self.log_box.see(tk.END)
 
     def _log_exception(self, prefix: str, exc: BaseException) -> None:
-        """
-        Log an exception with traceback in the log panel.
-        """
-        self._log(f"[ERROR] {prefix}: {exc}")
-        tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-        self.log_text.insert(tk.END, tb + "\n")
-        self.log_text.see(tk.END)
+        self._log(prefix)
+        tb = traceback.format_exc()
+        self._log(tb)
 
     def _safe_call(self, func):
-        """
-        Wrap a callback so that exceptions are caught and shown in the log panel,
-        instead of silently killing the Tkinter event loop.
-        """
-        def wrapper(*args, **kwargs):
+        def wrapper():
             try:
-                return func(*args, **kwargs)
-            except Exception as e:  # noqa: BLE001
-                self._log_exception(f"Exception in {func.__name__}", e)
+                func()
+            except Exception as e:
+                self._log_exception("ERROR:", e)
         return wrapper
 
     # ------------------------------------------------------------------
-    # Button handlers
+    # Handlers / windows
     # ------------------------------------------------------------------
 
     def _handle_init_db(self) -> None:
-        """
-        Button: Initialize / Verify DB schema.
-        """
         initialize_database()
         self._log("Database schema initialized / verified.")
 
     def _open_shopping_list_window(self) -> None:
-        """
-        Button: Open a window listing active shopping list items.
-        """
         win = tk.Toplevel(self)
         win.title("Shopping List")
         win.geometry("500x400")
@@ -202,7 +151,7 @@ class GrocerySenseApp(tk.Tk):
 
         def refresh():
             listbox.delete(0, tk.END)
-            items = self.shopping_list_service.list_active_items(include_checked_off=True)
+            items = self.shopping_list_service.get_active_items(include_checked_off=True)
             if not items:
                 listbox.insert(tk.END, "(no items)")
                 return
@@ -221,9 +170,6 @@ class GrocerySenseApp(tk.Tk):
         refresh()
 
     def _open_meal_suggestions_window(self) -> None:
-        """
-        Button: Open a window showing meal suggestions and explanations.
-        """
         win = tk.Toplevel(self)
         win.title("Meal Suggestions")
         win.geometry("700x500")
@@ -237,70 +183,32 @@ class GrocerySenseApp(tk.Tk):
             font=("Segoe UI", 11, "bold"),
         ).grid(row=0, column=0, sticky="w")
 
-        # List of recipes on the left
-        suggestions_box = tk.Listbox(top_frame, width=35)
-        suggestions_box.grid(row=1, column=0, sticky="nsew", pady=(5, 0))
+        listbox = tk.Listbox(top_frame, width=35)
+        listbox.grid(row=1, column=0, sticky="nsw", pady=10)
 
-        # Explanation on the right
-        explanation_text = ScrolledText(top_frame, width=50, height=20, state=tk.NORMAL)
-        explanation_text.grid(row=1, column=1, sticky="nsew", padx=(10, 0), pady=(5, 0))
+        details = ScrolledText(top_frame, state=tk.NORMAL)
+        details.grid(row=1, column=1, sticky="nsew", padx=(10, 0), pady=10)
 
-        top_frame.columnconfigure(0, weight=1)
-        top_frame.columnconfigure(1, weight=2)
-        top_frame.rowconfigure(1, weight=1)
+        top_frame.grid_columnconfigure(1, weight=1)
+        top_frame.grid_rowconfigure(1, weight=1)
 
-        # Storage for current suggestions
-        current_suggestions = []
+        suggestions = self.meal_suggestion_service.suggest_meals_for_week(max_recipes=10)
 
-        def load_suggestions():
-            nonlocal current_suggestions
-            suggestions_box.delete(0, tk.END)
-            explanation_text.delete("1.0", tk.END)
+        for s in suggestions:
+            name = s.recipe.get("name") or s.recipe.get("title") or "Recipe"
+            listbox.insert(tk.END, name)
 
-            self._log("Loading meal suggestions (no explicit ingredient targets)...")
-            current_suggestions = self.meal_suggestion_service.suggest_meals_for_week(
-                target_ingredients=None,
-                max_recipes=6,
-                recently_used_recipe_ids=None,
-            )
-
-            if not current_suggestions:
-                suggestions_box.insert(tk.END, "(no suggestions)")
+        def on_select(evt):
+            idxs = listbox.curselection()
+            if not idxs:
                 return
+            s = suggestions[idxs[0]]
+            details.delete("1.0", tk.END)
+            details.insert(tk.END, explain_suggested_meal(s))
 
-            for s in current_suggestions:
-                name = s.recipe.get("name", "Unnamed recipe")
-                suggestions_box.insert(tk.END, f"{name} (score {s.total_score:.2f})")
-
-        def on_select(event):
-            if not current_suggestions:
-                return
-            sel = suggestions_box.curselection()
-            if not sel:
-                return
-            idx = sel[0]
-            if idx >= len(current_suggestions):
-                return
-            s = current_suggestions[idx]
-            explanation = explain_suggested_meal(s)
-            explanation_text.delete("1.0", tk.END)
-            explanation_text.insert(tk.END, explanation)
-
-        suggestions_box.bind("<<ListboxSelect>>", self._safe_call(on_select))
-
-        button_frame = ttk.Frame(win)
-        button_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=(0, 10))
-
-        ttk.Button(button_frame, text="Reload Suggestions", command=self._safe_call(load_suggestions)).pack(
-            side=tk.LEFT
-        )
-
-        load_suggestions()
+        listbox.bind("<<ListboxSelect>>", on_select)
 
     def _open_weekly_plan_window(self) -> None:
-        """
-        Button: Build a weekly plan, persist to shopping list, and show summary.
-        """
         win = tk.Toplevel(self)
         win.title("Weekly Plan")
         win.geometry("700x500")
@@ -314,6 +222,7 @@ class GrocerySenseApp(tk.Tk):
 
         def build_plan():
             summary_box.delete("1.0", tk.END)
+
             self._log("Building weekly plan (6 recipes, added to shopping list)...")
 
             plan = self.weekly_planner_service.build_weekly_plan(
@@ -340,7 +249,6 @@ class GrocerySenseApp(tk.Tk):
             side=tk.BOTTOM, pady=5
         )
 
-        # Optionally build immediately on open:
         build_plan()
 
 
