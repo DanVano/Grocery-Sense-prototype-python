@@ -1,138 +1,118 @@
 """
 grocery_sense.services.meal_suggestion_service
 
-Suggests recipes based on:
-- User preferences (diet, avoid ingredients, preferred meats, etc.)
-- Current flyer deals (via deals_service)
-- Historical baseline prices (via a PriceHistoryService passed in)
+High-level engine for suggesting value-focused meals for the week.
 
-This service is deliberately decoupled from the DB and UI:
-- It expects a list of recipe dicts as input.
-- It relies on an injected price_history_service with a simple interface.
+Combines:
+- User profile (diet, allergies, meat prefs, favorite tags)
+- Recipe data (from recipes.json via RecipeEngine)
+- Current flyer deals (via deals_service.search_deals)
+- Historical baseline prices (via injected PriceHistoryService)
 
-Recipe shape (expected minimum for scoring):
-    {
-        "id": str | int,
-        "name": str,
-        "ingredients": List[str],
-        "tags": List[str]   # e.g. ["30min", "gluten-free", "chicken"]
-    }
-
-Profile shape (flexible, keys are optional):
-    {
-        "diet": "omnivore" | "vegetarian" | "vegan" | ...,
-        "avoid_ingredients": [str, ...],
-        "allergies": [str, ...],
-        "disliked_ingredients": [str, ...],
-        "prefer_meats": [str, ...],   # e.g. ["chicken", "fish"]
-        "avoid_meats": [str, ...],    # e.g. ["pork", "lamb"]
-    }
-
-PriceHistoryService expected interface:
-    class PriceHistoryService:
-        def get_baseline_price(self, ingredient_name: str, window_days: int = 90) -> float | None:
-            ...
-
-We do not call the DB directly here; the caller is responsible for:
-- Getting recipe dicts
-- Creating / injecting PriceHistoryService
+This is the "Choice C" brain:
+    preferences + sales + historical avg (weighted less)
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from grocery_sense.services.deals_service import (
-    Deal,
-    search_deals,
-    rank_recipes_by_deals,
+from grocery_sense.config_store import get_user_profile
+from grocery_sense.recipes.recipe_engine import (
+    RecipeEngine,
+    load_all_recipes,
+    filter_recipes_by_ingredients_and_profile,
 )
+from grocery_sense.services.deals_service import Deal, search_deals
 
 
 # ---------------------------------------------------------------------------
-# Small data structures
+# Data structures
 # ---------------------------------------------------------------------------
 
 
 @dataclass
-class ScoredRecipe:
-    recipe: Dict[str, Any]
+class SuggestedMeal:
+    recipe: dict
     total_score: float
-    price_score: float
     preference_score: float
+    deal_score: float
+    price_score: float
     variety_score: float
+    reasons: list[str]
+    explanation: str | None = None
 
 
 # ---------------------------------------------------------------------------
-# Utility helpers
+# Internal helpers
 # ---------------------------------------------------------------------------
 
 
 def _lower_list(values: Optional[Iterable[str]]) -> List[str]:
     if not values:
         return []
-    return [v.lower().strip() for v in values if isinstance(v, str) and v.strip()]
+    return [v.strip().lower() for v in values if isinstance(v, str) and v.strip()]
 
 
 def _extract_core_ingredients(recipe: Dict[str, Any]) -> List[str]:
-    """
-    For now, treat all ingredients as 'core'. In the future, you can
-    add a flag in your recipe schema to mark core vs. minor (oil, salt).
-    """
     ings = recipe.get("ingredients") or []
     return [str(i).strip() for i in ings if str(i).strip()]
 
 
-def _recipe_has_disallowed_ingredients(
-    recipe: Dict[str, Any],
-    avoid_terms: List[str],
-) -> bool:
+def _recipe_has_disallowed_ingredients(recipe: Dict[str, Any], profile: Dict[str, Any]) -> bool:
     """
-    Return True if any avoid term appears in the ingredients list.
+    Hard filter using allergies / avoid_ingredients / restrictions.
+    This is a safety net; RecipeEngine already does some of this.
     """
-    if not avoid_terms:
-        return False
     ingredients_text = " ".join(_extract_core_ingredients(recipe)).lower()
-    return any(term in ingredients_text for term in avoid_terms)
+
+    allergies = set(_lower_list(profile.get("allergies", [])))
+    avoid = set(_lower_list(profile.get("avoid_ingredients", [])))
+    restrictions = set(_lower_list(profile.get("restrictions", [])))
+
+    for term in allergies | avoid:
+        if term and term in ingredients_text:
+            return True
+
+    # Map some restrictions to ingredient bans
+    if "no_pork" in restrictions and "pork" in ingredients_text:
+        return True
+    if "no_beef" in restrictions and "beef" in ingredients_text:
+        return True
+
+    return False
 
 
-def _compute_preference_score(
-    recipe: Dict[str, Any],
-    profile: Dict[str, Any],
-) -> float:
+def _compute_preference_score(recipe: Dict[str, Any], profile: Dict[str, Any]) -> float:
     """
-    Score recipe based on user preferences (0–1 range, roughly).
-
-    - Penalize recipes that conflict with diet / avoid_ingredients / allergies.
-      (Those should ideally be filtered out entirely before scoring.)
-    - Reward recipes that contain preferred meats or tags.
+    Preference score in [0, 1] based on:
+    - prefer_meats (positive)
+    - avoid_meats (negative)
+    - favorite_tags (positive)
     """
-    ingredients = " ".join(_extract_core_ingredients(recipe)).lower()
-    tags = [t.lower() for t in (recipe.get("tags") or [])]
+    ingredients_text = " ".join(_extract_core_ingredients(recipe)).lower()
+    tags = {str(t).strip().lower() for t in (recipe.get("tags") or [])}
 
-    prefer_meats = _lower_list(profile.get("prefer_meats"))
-    avoid_meats = _lower_list(profile.get("avoid_meats"))
-    favorite_tags = _lower_list(profile.get("favorite_tags"))  # optional future key
+    prefer_meats = _lower_list(profile.get("prefer_meats", []))
+    avoid_meats = _lower_list(profile.get("avoid_meats", []))
+    favorite_tags = _lower_list(profile.get("favorite_tags", []))
 
     score = 0.0
 
-    # Prefer meats
     for meat in prefer_meats:
-        if meat and meat in ingredients:
-            score += 0.3  # per matched preferred meat
+        if meat and meat in ingredients_text:
+            score += 0.3
 
-    # Avoid meats (soft penalty if they slip through)
     for meat in avoid_meats:
-        if meat and meat in ingredients:
+        if meat and meat in ingredients_text:
             score -= 0.5
 
-    # Favorite tags (e.g. "30min", "high-protein")
     for tag in favorite_tags:
         if tag and tag in tags:
             score += 0.2
 
-    # Clamp to [0, 1]
+    # clamp
     if score < 0.0:
         score = 0.0
     if score > 1.0:
@@ -140,40 +120,47 @@ def _compute_preference_score(
     return score
 
 
-def _compute_price_score_for_ingredient(
+def _compute_price_contribution_for_ingredient(
     name: str,
     baseline_price: Optional[float],
-    deals: List[Deal],
+    deals: Sequence[Deal],
+    reasons_out: List[str],
 ) -> float:
     """
-    Compute a [0, 1] score contribution for a single ingredient:
-
-    - If we have both baseline and at least one deal, score by discount ratio.
-    - If only deals exist (no baseline), give a small positive bump.
-    - If neither, score is 0.
+    Contribution in [0, 1] for a single ingredient.
+    Adds textual reasons into reasons_out when appropriate.
     """
-    name_low = name.lower()
-    relevant_deals = [d for d in deals if name_low in d.name.lower()]
+    ing_low = name.lower()
+    relevant = [d for d in deals if ing_low in d.name.lower()]
 
-    if not relevant_deals and baseline_price is None:
+    if not relevant and baseline_price is None:
         return 0.0
 
-    # Best deal price we know
     deal_price = None
-    for d in relevant_deals:
+    best_deal: Optional[Deal] = None
+    for d in relevant:
         if d.price is None:
             continue
         if deal_price is None or d.price < deal_price:
             deal_price = d.price
+            best_deal = d
 
     if baseline_price is not None and baseline_price > 0 and deal_price is not None:
         discount = (baseline_price - deal_price) / baseline_price
-        # clamp between 0 and 1 (only care about positive discounts)
         discount = max(0.0, min(1.0, discount))
+        if discount >= 0.15 and best_deal is not None:
+            pct = int(discount * 100)
+            reasons_out.append(
+                f"{name} is about {pct}% below your usual price at {best_deal.store}."
+            )
         return discount
 
     if deal_price is not None and baseline_price is None:
-        # Some benefit, but we don't know how good compared to usual.
+        # Some upside, but we don’t know how good vs history.
+        if best_deal is not None:
+            reasons_out.append(
+                f"{name} is on sale at {best_deal.store} (price {best_deal.price_text})."
+            )
         return 0.15
 
     # baseline exists but no current deal
@@ -184,15 +171,9 @@ def _compute_price_score_for_recipe(
     recipe: Dict[str, Any],
     price_history_service: Any,
     deals_by_ingredient: Dict[str, List[Deal]],
+    reasons_out: List[str],
     baseline_window_days: int = 90,
 ) -> float:
-    """
-    Aggregate price score across all core ingredients.
-
-    - For each ingredient, we look up a baseline price via price_history_service.
-    - We look up any cached deals for that ingredient.
-    - Average contributions to get a 0–1 score for the recipe.
-    """
     ingredients = _extract_core_ingredients(recipe)
     if not ingredients:
         return 0.0
@@ -201,27 +182,27 @@ def _compute_price_score_for_recipe(
 
     for ing in ingredients:
         ing_low = ing.lower()
+
         baseline = None
         if price_history_service is not None:
-            # We expect this method to exist on the injected service.
             try:
                 baseline = price_history_service.get_baseline_price(
                     ing_low,
                     window_days=baseline_window_days,
                 )
             except AttributeError:
-                # PriceHistoryService not wired yet; treat as no baseline.
                 baseline = None
 
         deals = deals_by_ingredient.get(ing_low, [])
-        contrib = _compute_price_score_for_ingredient(ing_low, baseline, deals)
+        contrib = _compute_price_contribution_for_ingredient(
+            ing_low, baseline, deals, reasons_out
+        )
         contributions.append(contrib)
 
     if not contributions:
         return 0.0
 
     avg = sum(contributions) / len(contributions)
-    # Ensure within [0, 1]
     if avg < 0.0:
         avg = 0.0
     if avg > 1.0:
@@ -231,17 +212,11 @@ def _compute_price_score_for_recipe(
 
 def _compute_variety_score(
     recipe: Dict[str, Any],
-    recently_used_recipe_ids: Optional[Iterable[Any]] = None,
+    recently_used_recipe_ids: Optional[Iterable[Any]],
 ) -> float:
     """
     Very simple variety heuristic:
-
-    - If the recipe is in recently_used_recipe_ids, penalize slightly.
-    - Otherwise, neutral.
-
-    In the future, you can enrich this with:
-    - rotation across cuisines,
-    - balancing carb/fat/protein across the week, etc.
+    - If recipe ID appears in recently_used_recipe_ids -> small penalty.
     """
     if not recently_used_recipe_ids:
         return 0.0
@@ -255,6 +230,35 @@ def _compute_variety_score(
     return 0.0
 
 
+def _collect_all_ingredients(recipes: Sequence[Dict[str, Any]]) -> List[str]:
+    seen = set()
+    result: List[str] = []
+    for r in recipes:
+        for ing in _extract_core_ingredients(r):
+            low = ing.lower()
+            if low not in seen:
+                seen.add(low)
+                result.append(low)
+    return result
+
+
+def _fetch_deals_for_ingredients(
+    ingredients: Sequence[str],
+    max_age_days: int = 7,
+) -> Dict[str, List[Deal]]:
+    """
+    For each ingredient, call search_deals once and cache.
+    """
+    deals_by_ing: Dict[str, List[Deal]] = {}
+    for ing in ingredients:
+        try:
+            deals = search_deals(ing, max_age_days=max_age_days)
+        except Exception:
+            deals = []
+        deals_by_ing[ing.lower()] = deals
+    return deals_by_ing
+
+
 # ---------------------------------------------------------------------------
 # MealSuggestionService
 # ---------------------------------------------------------------------------
@@ -262,149 +266,170 @@ def _compute_variety_score(
 
 class MealSuggestionService:
     """
-    Core engine for suggesting recipes based on:
-    - Profile preferences
-    - Current flyer deals (via search_deals)
-    - Historical baseline prices (via injected PriceHistoryService)
-
-    Usage pattern:
-
-        service = MealSuggestionService(price_history_service)
-        suggestions = service.suggest_meals(profile, recipes, max_recipes=5)
-
-    Where:
-        profile: dict (see module docstring)
-        recipes: list of recipe dicts (id, name, ingredients, tags)
+    Suggests recipes based on:
+    - user profile (via config_store or passed-in)
+    - recipe set (via RecipeEngine or passed-in)
+    - flyer deals (deals_service)
+    - receipt-based historical prices (PriceHistoryService)
     """
 
-    def __init__(self, price_history_service: Any | None = None):
+    def __init__(
+        self,
+        price_history_service: Any | None = None,
+        recipe_engine: RecipeEngine | None = None,
+    ) -> None:
         self.price_history_service = price_history_service
+        self.recipe_engine = recipe_engine or RecipeEngine()
 
     # ---- Public API -----------------------------------------------------
 
-    def suggest_meals(
+    def suggest_meals_for_week(
         self,
-        profile: Dict[str, Any],
-        recipes: List[Dict[str, Any]],
-        max_recipes: int = 5,
+        profile: Optional[Dict[str, Any]] = None,
+        target_ingredients: Optional[Iterable[str]] = None,
+        max_recipes: int = 6,
         recently_used_recipe_ids: Optional[Iterable[Any]] = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> List[SuggestedMeal]:
         """
-        Main entrypoint.
+        High-level entrypoint.
 
-        1) Filter recipes that violate hard constraints (allergies, avoid_ingredients).
-        2) Collect a set of core ingredients across remaining recipes.
-        3) Fetch deals for those ingredients (one flyer search per ingredient).
-        4) Compute:
-            - price_score  (0–1, from deals + baseline)
-            - preference_score (0–1)
-            - variety_score (≈ -0.2 to 0.0)
-        5) Combine into total_score with weights:
-            total = 0.5 * price + 0.3 * preference + 0.2 * variety
-        6) Return top N recipe dicts.
+        profile:
+            If None, uses config_store.get_user_profile().
+
+        target_ingredients:
+            - If provided, we first filter recipes using
+              filter_recipes_by_ingredients_and_profile().
+            - If None/empty, we consider all recipes, and let scoring decide.
+
+        max_recipes:
+            Number of suggestions to return.
+
+        recently_used_recipe_ids:
+            Optional set/list of recipe IDs cooked recently; helps encourage variety.
         """
-        filtered = self._filter_recipes_by_hard_constraints(profile, recipes)
+        if profile is None:
+            profile = get_user_profile()
+
+        # 1) Get candidate recipes
+        if target_ingredients:
+            recipes = filter_recipes_by_ingredients_and_profile(
+                include_ingredients=target_ingredients,
+                profile=profile,
+                max_results=200,  # big enough, scoring will narrow down
+            )
+        else:
+            recipes = load_all_recipes()
+
+        # Safety: re-check hard constraints, in case recipes.json changed
+        filtered: List[Dict[str, Any]] = []
+        for r in recipes:
+            if _recipe_has_disallowed_ingredients(r, profile):
+                continue
+            filtered.append(r)
+
         if not filtered:
             return []
 
-        # Build a list of ingredient names across all recipes for deal fetch
-        all_ingredients = self._collect_all_ingredients(filtered)
-        deals_by_ingredient = self._fetch_deals_for_ingredients(all_ingredients)
+        # 2) Fetch deals for ingredients across all candidate recipes
+        all_ingredients = _collect_all_ingredients(filtered)
+        deals_by_ingredient = _fetch_deals_for_ingredients(all_ingredients)
 
-        scored: List[ScoredRecipe] = []
+        # 3) Score each recipe
+        suggestions: List[SuggestedMeal] = []
 
         for r in filtered:
+            reasons: List[str] = []
+
             price_score = _compute_price_score_for_recipe(
                 r,
                 self.price_history_service,
                 deals_by_ingredient,
+                reasons,
             )
             preference_score = _compute_preference_score(r, profile)
             variety_score = _compute_variety_score(r, recently_used_recipe_ids)
 
-            # Combine scores with your chosen weights:
-            # Version C: preferences + sales + historical avg (weighted lower)
-            # Here:
-            #   price_score (deals + baseline) -> weight 0.5
-            #   preference_score              -> weight 0.3
-            #   variety_score                 -> weight 0.2
+            # Choice C weighting:
+            #  - price_score       -> 0.5
+            #  - preference_score  -> 0.3
+            #  - variety_score     -> 0.2
             total = (0.5 * price_score) + (0.3 * preference_score) + (0.2 * variety_score)
 
-            scored.append(
-                ScoredRecipe(
+            # Add some generic reasons when scores are non-zero
+            if preference_score > 0.5:
+                reasons.append("Matches your meat or tag preferences.")
+            if variety_score < 0:
+                reasons.append("You cooked this recently, slightly deprioritized.")
+
+            suggestions.append(
+                SuggestedMeal(
                     recipe=r,
                     total_score=total,
                     price_score=price_score,
                     preference_score=preference_score,
                     variety_score=variety_score,
+                    reasons=reasons,
                 )
             )
 
-        scored.sort(key=lambda x: x.total_score, reverse=True)
-        return [s.recipe for s in scored[:max_recipes]]
+        # 4) Sort & truncate
+        suggestions.sort(key=lambda s: s.total_score, reverse=True)
+        return suggestions[:max_recipes]
 
-    # ---- Internal helpers ----------------------------------------------
+def format_meal_explanation(
+    recipe_name: str,
+    preference_score: float,
+    deal_score: float,
+    price_score: float,
+    variety_score: float,
+    reasons: list[str],
+    max_reasons: int = 4,
+) -> str:
+    """
+    Build a human-readable explanation string for why a meal was suggested.
 
-    def _filter_recipes_by_hard_constraints(
-        self,
-        profile: Dict[str, Any],
-        recipes: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
-        """
-        Remove recipes that violate hard rules:
-        - allergies
-        - avoid_ingredients
-        - disliked_ingredients
+    This is intentionally generic and does NOT depend on any particular
+    dataclass type – you pass in the pieces you already have:
+      - recipe_name:   display name of the recipe
+      - preference_score: how well it fits the user's preferences (0–1 or similar)
+      - deal_score:    how much current flyer deals helped this recipe
+      - price_score:   how good the current prices look vs historical
+      - variety_score: how much it improves variety vs recent meals
+      - reasons:       a flat list of specific human-readable bullet points
+      - max_reasons:   how many of those reasons to include
 
-        This is where you could also enforce dietary tags (vegan/vegetarian).
-        """
-        avoid = _lower_list(profile.get("avoid_ingredients"))
-        allergies = _lower_list(profile.get("allergies"))
-        disliked = _lower_list(profile.get("disliked_ingredients"))
+    Returns:
+      A multi-line string you can show in UI, logs, or debug tools.
+    """
 
-        disallow_terms = set(avoid + allergies + disliked)
+    lines: list[str] = []
 
-        filtered: List[Dict[str, Any]] = []
-        for r in recipes:
-            if _recipe_has_disallowed_ingredients(r, list(disallow_terms)):
-                continue
-            # TODO: enforce diet vs recipe tags if you want (vegan, etc.)
-            filtered.append(r)
-        return filtered
+    lines.append(f"Why we suggested '{recipe_name}':")
 
-    def _collect_all_ingredients(
-        self,
-        recipes: List[Dict[str, Any]],
-    ) -> List[str]:
-        seen = set()
-        result: List[str] = []
-        for r in recipes:
-            for ing in _extract_core_ingredients(r):
-                low = ing.lower()
-                if low not in seen:
-                    seen.add(low)
-                    result.append(low)
-        return result
+    # High-level summary line based on scores
+    summary_bits: list[str] = []
 
-    def _fetch_deals_for_ingredients(
-        self,
-        ingredients: List[str],
-        max_age_days: int = 7,
-    ) -> Dict[str, List[Deal]]:
-        """
-        For each ingredient name, call search_deals once and cache
-        the resulting Deal list in a dict keyed by ingredient.
+    # You can tune these thresholds to your scoring scale
+    if preference_score > 0.3:
+        summary_bits.append("matches your eating preferences")
+    if deal_score > 0.2:
+        summary_bits.append("uses ingredients that are on sale this week")
+    if price_score > 0.2:
+        summary_bits.append("is cheaper than your usual prices")
+    if variety_score > 0.2:
+        summary_bits.append("adds variety compared to your recent meals")
 
-        NOTE:
-        - This can be slow if the ingredient list is large.
-        - You might want to limit to top-N frequent ingredients per user,
-          or prefetch deals elsewhere and pass them in.
-        """
-        deals_by_ing: Dict[str, List[Deal]] = {}
-        for ing in ingredients:
-            try:
-                deals = search_deals(ing, max_age_days=max_age_days)
-            except Exception:
-                deals = []
-            deals_by_ing[ing] = deals
-        return deals_by_ing
+    if summary_bits:
+        lines.append(" • " + "; ".join(summary_bits) + ".")
+    else:
+        lines.append(" • Overall a reasonable match based on your profile and history.")
+
+    # Detailed bullet reasons (already assembled elsewhere)
+    if reasons:
+        lines.append("")
+        lines.append("Details:")
+        for r in reasons[:max_reasons]:
+            lines.append(f" • {r}")
+
+    return "\n".join(lines)
+
