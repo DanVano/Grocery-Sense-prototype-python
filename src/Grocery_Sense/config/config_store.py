@@ -1,5 +1,5 @@
 """
-grocery_sense.config_store
+Grocery_Sense.config_store
 
 Centralized configuration & user profile management for Grocery Sense.
 

@@ -1,6 +1,6 @@
 """
-grocery_sense.services.weekly_planner_service
-from grocery_sense.data.repositories.items_repo import ItemsRepository
+Grocery_Sense.services.weekly_planner_service
+from Grocery_Sense.data.repositories.items_repo import ItemsRepository
 
 
 WeeklyPlannerService:
@@ -16,11 +16,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-from grocery_sense.services.meal_suggestion_service import (
+from Grocery_Sense.services.meal_suggestion_service import (
     MealSuggestionService,
     SuggestedMeal,
 )
-from grocery_sense.services.shopping_list_service import ShoppingListService
+from Grocery_Sense.services.shopping_list_service import ShoppingListService
 
 
 # ---------------------------------------------------------------------------

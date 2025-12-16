@@ -1,20 +1,20 @@
 """
-grocery_sense.main
+Grocery_Sense.main
 
 Simple smoke-test harness for the Grocery Sense backend.
 
 Run from project root with:
-    python -m grocery_sense.main
+    python -m Grocery_Sense.main
 """
 
 from pprint import pprint
 
-from grocery_sense.data.schema import initialize_database
-from grocery_sense.data.repositories.stores_repo import (
+from Grocery_Sense.data.schema import initialize_database
+from Grocery_Sense.data.repositories.stores_repo import (
     create_store,
     list_stores,
 )
-from grocery_sense.data.repositories.shopping_list_repo import (
+from Grocery_Sense.data.repositories.shopping_list_repo import (
     add_item,
     list_active_items,
     mark_checked_off,

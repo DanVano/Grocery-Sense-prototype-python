@@ -1,8 +1,8 @@
 from pprint import pprint
 
-from grocery_sense.data.schema import initialize_database
-from grocery_sense.data.repositories.stores_repo import create_store, list_stores
-from grocery_sense.services.shopping_list_service import ShoppingListService
+from Grocery_Sense.data.schema import initialize_database
+from Grocery_Sense.data.repositories.stores_repo import create_store, list_stores
+from Grocery_Sense.services.shopping_list_service import ShoppingListService
 
 
 def run_smoke_test() -> None:

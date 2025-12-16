@@ -1,4 +1,4 @@
-from grocery_sense.data.schema import initialize_database
+from Grocery_Sense.data.schema import initialize_database
 
 def main():
     # First-time run or any startup: ensure DB tables exist
