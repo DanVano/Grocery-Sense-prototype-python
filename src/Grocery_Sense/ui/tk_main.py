@@ -26,9 +26,9 @@ from typing import Optional
 from Grocery_Sense.data.connection import get_connection
 from Grocery_Sense.data.schema import initialize_database
 
-from Grocery_Sense.data.items_repo import ItemsRepository
-from Grocery_Sense.data.stores_repo import StoresRepository
-from Grocery_Sense.data.shopping_list_repo import ShoppingListRepository
+from Grocery_Sense.data.repositories.items_repo import ItemsRepository
+from Grocery_Sense.data.repositories.stores_repo import StoresRepository
+from Grocery_Sense.data.repositories.shopping_list_repo import ShoppingListRepository
 
 from Grocery_Sense.services.shopping_list_service import ShoppingListService
 from Grocery_Sense.services.meal_suggestion_service import (
