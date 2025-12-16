@@ -244,3 +244,51 @@ def update_item_package_info(
             """,
             (typical_package_size, typical_package_unit, item_id),
         )
+
+    def find_best_match(self, name: str) -> Optional[Item]:
+        """
+        Try to map a free-text ingredient like 'chicken thighs'
+        to the most likely Item in the items table.
+
+        Strategy (simple for now):
+        - normalize to lowercase
+        - first try exact match on canonical_name or name
+        - later we can extend with LIKE/fuzzy matching
+        """
+        name_low = name.strip().lower()
+        if not name_low:
+            return None
+
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            SELECT
+                id,
+                name,
+                canonical_name,
+                category,
+                typical_unit,
+                typical_package_size,
+                typical_package_unit,
+                is_meat,
+                is_produce,
+                created_at,
+                updated_at
+            FROM items
+            WHERE lower(canonical_name) = ?
+               OR lower(name) = ?
+            ORDER BY is_meat DESC, is_produce DESC
+            LIMIT 1
+            """,
+            (name_low, name_low),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return self._row_to_item(row)
+
+def list_all_item_names(self):
+    with get_connection(self.db_path) as conn:
+        rows = conn.execute("SELECT id, name FROM items ORDER BY name ASC").fetchall()
+    return [(r[0], r[1]) for r in rows]
+
