@@ -1,5 +1,5 @@
 """
-grocery_sense.services.planning_service
+Grocery_Sense.services.planning_service
 
 Service layer for planning which stores to visit for the current shopping list.
 
@@ -16,11 +16,11 @@ from dataclasses import asdict
 from typing import Dict, List, Optional, Tuple
 from statistics import mean
 
-from grocery_sense.data.repositories.stores_repo import list_stores
-from grocery_sense.data.repositories.items_repo import get_item_by_name
-from grocery_sense.data.repositories.prices_repo import get_prices_for_item
-from grocery_sense.domain.models import Store, ShoppingListItem
-from grocery_sense.services.shopping_list_service import ShoppingListService
+from Grocery_Sense.data.repositories.stores_repo import list_stores
+from Grocery_Sense.data.repositories.items_repo import get_item_by_name
+from Grocery_Sense.data.repositories.prices_repo import get_prices_for_item
+from Grocery_Sense.domain.models import Store, ShoppingListItem
+from Grocery_Sense.services.shopping_list_service import ShoppingListService
 
 
 class PlanningService:

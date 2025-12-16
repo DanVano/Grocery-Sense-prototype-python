@@ -1,5 +1,5 @@
 """
-grocery_sense.data.repositories.shopping_list_repo
+Grocery_Sense.data.repositories.shopping_list_repo
 
 SQLite-backed persistence for ShoppingListItem objects.
 """
@@ -10,8 +10,8 @@ from typing import List, Optional
 from contextlib import closing
 from datetime import datetime
 
-from grocery_sense.data.connection import get_connection
-from grocery_sense.domain.models import ShoppingListItem
+from Grocery_Sense.data.connection import get_connection
+from Grocery_Sense.domain.models import ShoppingListItem
 
 
 # ---------- Row mapping helpers ----------

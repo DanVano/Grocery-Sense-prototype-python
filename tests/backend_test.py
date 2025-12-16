@@ -14,7 +14,7 @@ This exercises:
 from __future__ import annotations
 
 from Grocery_Sense.data.schema import initialize_database
-from Grocery_Sense.data.stores_repo import create_store, list_stores
+from Grocery_Sense.data.repositories.stores_repo import create_store, list_stores
 from Grocery_Sense.services.shopping_list_service import ShoppingListService
 
 

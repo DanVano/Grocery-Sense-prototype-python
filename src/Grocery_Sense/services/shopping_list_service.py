@@ -1,5 +1,5 @@
 """
-grocery_sense.services.shopping_list_service
+Grocery_Sense.services.shopping_list_service
 
 Service layer for shopping list behavior.
 
@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Dict, List, Optional
 
-from grocery_sense.data.repositories.shopping_list_repo import (
+from Grocery_Sense.data.repositories.shopping_list_repo import (
     add_item,
     get_item_by_id,
     list_active_items,
@@ -20,7 +20,7 @@ from grocery_sense.data.repositories.shopping_list_repo import (
     clear_checked_off_items,
     soft_delete_item,
 )
-from grocery_sense.domain.models import ShoppingListItem
+from Grocery_Sense.domain.models import ShoppingListItem
 
 
 class ShoppingListService:
