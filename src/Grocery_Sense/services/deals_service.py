@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
-from Grocery_Sense.config_store import (
+from Grocery_Sense.config.config_store import (
     get_postal_code,
     get_store_priority,
     cache_get,
