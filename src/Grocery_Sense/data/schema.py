@@ -144,6 +144,22 @@ def create_tables(conn: sqlite3.Connection) -> None:
         ON prices(item_id, store_id, date);
         """
     )
+    # --- Fuzzy matching ---
+    cur.execute(
+	"""
+	CREATE TABLE IF NOT EXISTS item_aliases (
+    	    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    	    alias_text TEXT NOT NULL UNIQUE,
+    	    item_id INTEGER NOT NULL,
+    	    confidence REAL NOT NULL DEFAULT 1.0,
+    	    source TEXT NOT NULL DEFAULT 'manual',
+    	    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    	    last_seen_at TEXT,
+    	    times_seen INTEGER NOT NULL DEFAULT 0,
+    	    FOREIGN KEY(item_id) REFERENCES items(id)
+	);
+	"""
+    )
 
     # --- shopping_list ---
     cur.execute(
@@ -164,6 +180,7 @@ def create_tables(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (planned_store_id) REFERENCES stores(id)  ON DELETE SET NULL
         );
         """
+
     )
     cur.execute(
         """
