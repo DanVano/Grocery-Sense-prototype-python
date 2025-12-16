@@ -1,6 +1,5 @@
 """
 Grocery_Sense.services.weekly_planner_service
-from Grocery_Sense.data.repositories.items_repo import ItemsRepository
 
 
 WeeklyPlannerService:
@@ -45,7 +44,6 @@ class PlannedIngredient:
     item_id: Optional[int] = None
 
 
-
 @dataclass
 class WeeklyPlan:
     """
@@ -59,88 +57,85 @@ class WeeklyPlan:
 
 
 # ---------------------------------------------------------------------------
-# Helper functions
+# Helpers
 # ---------------------------------------------------------------------------
 
 
-def _normalize_ingredient_name(text: str) -> str:
-    return " ".join(text.strip().lower().split())
+def _normalize_ingredient_name(name: str) -> str:
+    return " ".join(str(name).strip().lower().split())
 
 
-def _extract_ingredients_from_recipe(recipe: Dict[str, Any]) -> List[str]:
+def _extract_ingredients(recipe: Dict[str, Any]) -> List[str]:
     ings = recipe.get("ingredients") or []
-    return [str(i).strip() for i in ings if str(i).strip()]
+    out: List[str] = []
+    for x in ings:
+        s = str(x).strip()
+        if s:
+            out.append(s)
+    return out
 
 
-def _aggregate_ingredients_from_suggestions(
+def _aggregate_ingredients(
     suggestions: Sequence[SuggestedMeal],
 ) -> List[PlannedIngredient]:
     """
     Build a cross-recipe ingredient list.
-
-    Example result row:
-        name="chicken thighs",
-        recipe_names=["Honey Garlic Chicken", "Chicken Fried Rice"],
-        approximate_count=2
     """
     agg: Dict[str, Dict[str, Any]] = {}
 
     for s in suggestions:
         recipe = s.recipe
-        recipe_name = str(recipe.get("name", "")).strip() or "Unnamed recipe"
-        for ing in _extract_ingredients_from_recipe(recipe):
-            key = _normalize_ingredient_name(ing)
-            if not key:
+        recipe_name = str(recipe.get("name", "")).strip() or "Unnamed Recipe"
+
+        for ing in _extract_ingredients(recipe):
+            norm = _normalize_ingredient_name(ing)
+            if not norm:
                 continue
-            entry = agg.setdefault(
-                key,
-                {
-                    "name": key,
+
+            if norm not in agg:
+                agg[norm] = {
+                    "display": ing.strip(),
                     "recipes": set(),
                     "count": 0,
-                },
-            )
-            entry["recipes"].add(recipe_name)
-            entry["count"] += 1
+                    "item_id": None,
+                }
+
+            agg[norm]["recipes"].add(recipe_name)
+            agg[norm]["count"] += 1
 
     planned: List[PlannedIngredient] = []
-    for key, raw in agg.items():
+    for norm, data in agg.items():
         planned.append(
             PlannedIngredient(
-                name=raw["name"],
-                recipe_names=sorted(raw["recipes"]),
-                approximate_count=int(raw["count"]),
+                name=str(data["display"]),
+                recipe_names=sorted(list(data["recipes"])),
+                approximate_count=int(data["count"]),
+                item_id=data.get("item_id"),
             )
         )
 
-    # Sort alphabetically for now; later we could sort by meat/produce/etc.
-    planned.sort(key=lambda p: p.name)
+    planned.sort(key=lambda x: (-x.approximate_count, x.name.lower()))
     return planned
 
 
 # ---------------------------------------------------------------------------
-# WeeklyPlannerService
+# Service
 # ---------------------------------------------------------------------------
 
 
 class WeeklyPlannerService:
     """
-    Orchestrates weekly meal selection + shopping list aggregation.
-
-    Dependencies:
-    - MealSuggestionService (value + preference scoring)
-    - ShoppingListService (optional) for persisting planned ingredients
+    Orchestrates meal selection and optionally persists aggregated ingredients
+    into ShoppingListService.
     """
 
     def __init__(
         self,
         meal_suggestion_service: MealSuggestionService,
-        shopping_list_service: Optional[ShoppingListService] = None,
+        shopping_list_service: ShoppingListService,
     ) -> None:
         self.meal_suggestion_service = meal_suggestion_service
         self.shopping_list_service = shopping_list_service
-
-    # ---- Public API -----------------------------------------------------
 
     def build_weekly_plan(
         self,
@@ -149,88 +144,70 @@ class WeeklyPlannerService:
         recently_used_recipe_ids: Optional[Iterable[Any]] = None,
         persist_to_shopping_list: bool = False,
         planned_store_id: Optional[int] = None,
-        added_by: str = "weekly_planner",
+        added_by: Optional[str] = None,
     ) -> WeeklyPlan:
         """
-        Main orchestration method.
+        Returns a WeeklyPlan with SuggestedMeal list + aggregated ingredients.
 
-        - num_recipes:
-            How many recipes to suggest for the week (e.g., 6–9).
-        - target_ingredients:
-            Optional list guiding suggestion (e.g., ["chicken", "rice"]).
-            If None, suggestions are based purely on profile + value.
-        - recently_used_recipe_ids:
-            Optional list/set of recipe IDs cooked recently; improves variety.
-        - persist_to_shopping_list:
-            If True and a ShoppingListService is configured, we will
-            create shopping list entries for the aggregated ingredients.
-        - planned_store_id:
-            Optional store ID to assign to all generated shopping list items.
-        - added_by:
-            Metadata tag for ShoppingListService (e.g. "weekly_planner").
+        If persist_to_shopping_list=True, aggregated ingredients get added
+        into the shopping list as best-effort items (no canonical item_id yet).
         """
-        # 1) Ask the MealSuggestionService for good-value recipes
         suggestions = self.meal_suggestion_service.suggest_meals_for_week(
             target_ingredients=target_ingredients,
             max_recipes=num_recipes,
             recently_used_recipe_ids=recently_used_recipe_ids,
         )
 
-        if not suggestions:
-            # No plan possible; return empty structure
-            return WeeklyPlan(suggestions=[], planned_ingredients=[])
+        planned_ingredients = _aggregate_ingredients(suggestions)
 
-        # 2) Aggregate ingredients across suggested recipes
-        planned_ingredients = _aggregate_ingredients_from_suggestions(suggestions)
+        plan = WeeklyPlan(
+            suggestions=list(suggestions),
+            planned_ingredients=planned_ingredients,
+        )
 
-        # 3) Optionally persist to ShoppingListService
-        if persist_to_shopping_list and self.shopping_list_service is not None:
-            self._persist_ingredients_to_shopping_list(
-                planned_ingredients=planned_ingredients,
+        if persist_to_shopping_list:
+            self._persist_plan_to_shopping_list(
+                plan=plan,
                 planned_store_id=planned_store_id,
                 added_by=added_by,
             )
 
-        return WeeklyPlan(
-            suggestions=suggestions,
-            planned_ingredients=planned_ingredients,
-        )
+        return plan
 
-    # ---- Internal helpers -----------------------------------------------
-
-    def _persist_ingredients_to_shopping_list(
+    def _persist_plan_to_shopping_list(
         self,
-        planned_ingredients: Sequence[PlannedIngredient],
+        plan: WeeklyPlan,
         planned_store_id: Optional[int],
-        added_by: str,
+        added_by: Optional[str],
     ) -> None:
         """
-        Send the aggregated ingredients into the ShoppingListService.
-
-        For now:
-        - quantity is approximate_count (how many recipes use it)
-        - unit is "each"
-        - item_id is left None (we haven't implemented item mapping yet)
+        Best-effort persistence: add each PlannedIngredient into the list.
         """
-        if self.shopping_list_service is None:
-            return
-
-        for ing in planned_ingredients:
-            # Human-readable notes: which recipes this ingredient appears in
+        for ing in plan.planned_ingredients:
             if ing.recipe_names:
                 notes = "Used in: " + ", ".join(ing.recipe_names)
             else:
                 notes = ""
 
-            # Approximate quantity: number of recipes using this ingredient
             quantity = max(1.0, float(ing.approximate_count))
 
-            self.shopping_list_service.add_item(
-                display_name=ing.name,
+            self.shopping_list_service.add_single_item(
+                name=ing.name,
                 quantity=quantity,
                 unit="each",
-                item_id=None,
                 planned_store_id=planned_store_id,
                 notes=notes,
                 added_by=added_by,
             )
+
+
+def summarize_weekly_plan(plan: WeeklyPlan) -> list[str]:
+    """UI/helper summary for a WeeklyPlan."""
+    lines: list[str] = []
+    lines.append(f"Weekly plan: {len(plan.suggestions)} recipes")
+    for i, s in enumerate(plan.suggestions, 1):
+        name = s.recipe.get("name") or s.recipe.get("title") or f"Recipe {i}"
+        lines.append(f"{i}. {name} (score={s.total_score:.2f})")
+    if plan.planned_ingredients:
+        lines.append(f"Planned ingredients: {len(plan.planned_ingredients)} unique items")
+    return lines
