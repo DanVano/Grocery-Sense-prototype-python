@@ -1,5 +1,5 @@
 """
-Grocery_Sense.services.meal_suggestion_service
+grocery_sense.services.meal_suggestion_service
 
 High-level engine for suggesting value-focused meals for the week.
 
@@ -18,16 +18,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from Grocery_Sense.config_store import get_user_profile
-from Grocery_Sense.recipes.recipe_engine import (
+from grocery_sense.config_store import get_user_profile
+from grocery_sense.recipes.recipe_engine import (
     RecipeEngine,
+    load_all_recipes,
     filter_recipes_by_ingredients_and_profile,
 )
-from Grocery_Sense.services.deals_service import Deal, search_deals
+from grocery_sense.services.deals_service import Deal, search_deals
 
 
 # ---------------------------------------------------------------------------
-# Output model
+# Data structures
 # ---------------------------------------------------------------------------
 
 
@@ -62,173 +63,204 @@ def _extract_core_ingredients(recipe: Dict[str, Any]) -> List[str]:
 def _recipe_has_disallowed_ingredients(recipe: Dict[str, Any], profile: Dict[str, Any]) -> bool:
     """
     Hard filter using allergies / avoid_ingredients / restrictions.
-    This is a safety net.
+    This is a safety net; RecipeEngine already does some of this.
     """
-    avoid = set(_lower_list(profile.get("avoid_ingredients")))
-    allergies = set(_lower_list(profile.get("allergies")))
-    restrictions = set(_lower_list(profile.get("dietary_restrictions")))
+    ingredients_text = " ".join(_extract_core_ingredients(recipe)).lower()
 
-    # A tiny heuristic: if vegan/vegetarian, disallow common meats.
-    if "vegan" in restrictions:
-        avoid |= {"beef", "pork", "chicken", "turkey", "fish", "salmon", "tuna", "egg", "eggs", "milk", "cheese"}
-    elif "vegetarian" in restrictions:
-        avoid |= {"beef", "pork", "chicken", "turkey", "fish", "salmon", "tuna", "gelatin"}
+    allergies = set(_lower_list(profile.get("allergies", [])))
+    avoid = set(_lower_list(profile.get("avoid_ingredients", [])))
+    restrictions = set(_lower_list(profile.get("restrictions", [])))
 
-    for ing in _extract_core_ingredients(recipe):
-        low = ing.lower()
-        for bad in avoid:
-            if bad and bad in low:
-                return True
-        for bad in allergies:
-            if bad and bad in low:
-                return True
+    for term in allergies | avoid:
+        if term and term in ingredients_text:
+            return True
+
+    # Map some restrictions to ingredient bans
+    if "no_pork" in restrictions and "pork" in ingredients_text:
+        return True
+    if "no_beef" in restrictions and "beef" in ingredients_text:
+        return True
 
     return False
 
 
-def _collect_all_ingredients(recipes: Sequence[Dict[str, Any]]) -> List[str]:
-    seen: set[str] = set()
-    out: List[str] = []
-    for r in recipes:
-        for ing in _extract_core_ingredients(r):
-            k = ing.strip().lower()
-            if not k or k in seen:
-                continue
-            seen.add(k)
-            out.append(ing)
-    return out
-
-
-def _fetch_deals_for_ingredients(ingredients: Sequence[str]) -> Dict[str, List[Deal]]:
-    """
-    Fetch flyer deals for a list of ingredient strings.
-
-    Returns:
-        dict: ingredient_lower -> list[Deal]
-    """
-    deals_by_ing: Dict[str, List[Deal]] = {}
-    for ing in ingredients:
-        q = ing.strip()
-        if not q:
-            continue
-        deals = search_deals(q)
-        if deals:
-            deals_by_ing[q.lower()] = deals
-    return deals_by_ing
-
-
 def _compute_preference_score(recipe: Dict[str, Any], profile: Dict[str, Any]) -> float:
     """
-    Quick preference score from recipe tags + preferred meats.
-    This is intentionally simple for a prototype.
+    Preference score in [0, 1] based on:
+    - prefer_meats (positive)
+    - avoid_meats (negative)
+    - favorite_tags (positive)
     """
-    tags = set(_lower_list(recipe.get("tags")))
-    preferred_tags = set(_lower_list(profile.get("favorite_tags")))
-    preferred_meats = set(_lower_list(profile.get("preferred_meats")))
+    ingredients_text = " ".join(_extract_core_ingredients(recipe)).lower()
+    tags = {str(t).strip().lower() for t in (recipe.get("tags") or [])}
+
+    prefer_meats = _lower_list(profile.get("prefer_meats", []))
+    avoid_meats = _lower_list(profile.get("avoid_meats", []))
+    favorite_tags = _lower_list(profile.get("favorite_tags", []))
 
     score = 0.0
 
-    # Tag matches
-    if preferred_tags and tags:
-        overlap = len(tags & preferred_tags)
-        score += min(1.0, overlap / max(1, len(preferred_tags)))
+    for meat in prefer_meats:
+        if meat and meat in ingredients_text:
+            score += 0.3
 
-    # Meat heuristic: if any preferred meat appears in ingredients, add a bump
-    if preferred_meats:
-        ings = " ".join(_extract_core_ingredients(recipe)).lower()
-        if any(m in ings for m in preferred_meats):
-            score += 0.25
+    for meat in avoid_meats:
+        if meat and meat in ingredients_text:
+            score -= 0.5
 
-    return min(1.0, score)
+    for tag in favorite_tags:
+        if tag and tag in tags:
+            score += 0.2
+
+    # clamp
+    if score < 0.0:
+        score = 0.0
+    if score > 1.0:
+        score = 1.0
+    return score
 
 
-def _compute_variety_score(recipe: Dict[str, Any], recently_used_recipe_ids: Optional[Iterable[Any]]) -> float:
+def _compute_price_contribution_for_ingredient(
+    name: str,
+    baseline_price: Optional[float],
+    deals: Sequence[Deal],
+    reasons_out: List[str],
+) -> float:
     """
-    Negative score if recently used, neutral otherwise.
-    This keeps it compatible with "add to total" weighting.
+    Contribution in [0, 1] for a single ingredient.
+    Adds textual reasons into reasons_out when appropriate.
     """
-    if not recently_used_recipe_ids:
+    ing_low = name.lower()
+    relevant = [d for d in deals if ing_low in d.name.lower()]
+
+    if not relevant and baseline_price is None:
         return 0.0
-    rid = recipe.get("id")
-    if rid is None:
-        return 0.0
-    used = set(recently_used_recipe_ids)
-    return -0.5 if rid in used else 0.0
 
+    deal_price = None
+    best_deal: Optional[Deal] = None
+    for d in relevant:
+        if d.price is None:
+            continue
+        if deal_price is None or d.price < deal_price:
+            deal_price = d.price
+            best_deal = d
 
-def _best_deal_for_ingredient(deals: List[Deal]) -> Optional[Deal]:
-    """
-    Pick the "best" deal from a list. Prototype heuristic:
-    - prefer higher discount_percent (if available)
-    - otherwise prefer lower price (if numeric)
-    """
-    if not deals:
-        return None
+    if baseline_price is not None and baseline_price > 0 and deal_price is not None:
+        discount = (baseline_price - deal_price) / baseline_price
+        discount = max(0.0, min(1.0, discount))
+        if discount >= 0.15 and best_deal is not None:
+            pct = int(discount * 100)
+            reasons_out.append(
+                f"{name} is about {pct}% below your usual price at {best_deal.store}."
+            )
+        return discount
 
-    def key(d: Deal) -> Tuple[float, float]:
-        disc = float(d.discount_percent or 0.0)
-        price = float(d.price or 999999.0)
-        # higher discount first, lower price second
-        return (disc, -price)
+    if deal_price is not None and baseline_price is None:
+        # Some upside, but we don’t know how good vs history.
+        if best_deal is not None:
+            reasons_out.append(
+                f"{name} is on sale at {best_deal.store} (price {best_deal.price_text})."
+            )
+        return 0.15
 
-    return sorted(deals, key=key, reverse=True)[0]
+    # baseline exists but no current deal
+    return 0.0
 
 
 def _compute_price_score_for_recipe(
     recipe: Dict[str, Any],
-    price_history_service: Any | None,
+    price_history_service: Any,
     deals_by_ingredient: Dict[str, List[Deal]],
-    reasons: List[str],
+    reasons_out: List[str],
+    baseline_window_days: int = 90,
+) -> float:
+    ingredients = _extract_core_ingredients(recipe)
+    if not ingredients:
+        return 0.0
+
+    contributions: List[float] = []
+
+    for ing in ingredients:
+        ing_low = ing.lower()
+
+        baseline = None
+        if price_history_service is not None:
+            try:
+                baseline = price_history_service.get_baseline_price(
+                    ing_low,
+                    window_days=baseline_window_days,
+                )
+            except AttributeError:
+                baseline = None
+
+        deals = deals_by_ingredient.get(ing_low, [])
+        contrib = _compute_price_contribution_for_ingredient(
+            ing_low, baseline, deals, reasons_out
+        )
+        contributions.append(contrib)
+
+    if not contributions:
+        return 0.0
+
+    avg = sum(contributions) / len(contributions)
+    if avg < 0.0:
+        avg = 0.0
+    if avg > 1.0:
+        avg = 1.0
+    return avg
+
+
+def _compute_variety_score(
+    recipe: Dict[str, Any],
+    recently_used_recipe_ids: Optional[Iterable[Any]],
 ) -> float:
     """
-    Prototype score (0..1-ish) for how "good value" this recipe is.
-
-    It blends:
-    - flyer deals (if present)
-    - optional historical baseline (if available)
-
-    Because the data model is still forming, we do ingredient-level heuristics.
+    Very simple variety heuristic:
+    - If recipe ID appears in recently_used_recipe_ids -> small penalty.
     """
-    ings = _extract_core_ingredients(recipe)
-    if not ings:
+    if not recently_used_recipe_ids:
         return 0.0
 
-    score = 0.0
-    hits = 0
-
-    for ing in ings:
-        key = ing.lower()
-        deals = deals_by_ingredient.get(key) or []
-        best = _best_deal_for_ingredient(deals)
-        if best:
-            hits += 1
-            # discount_percent is already a nice normalized signal
-            if best.discount_percent is not None:
-                score += min(1.0, float(best.discount_percent) / 50.0)  # 50% ~= max
-            else:
-                score += 0.25  # some deal exists, unknown quality
-
-            store = best.store_name or "a store"
-            if best.discount_percent is not None:
-                reasons.append(f"Deal on '{ing}' at {store} (~{best.discount_percent:.0f}% off).")
-            else:
-                reasons.append(f"Deal on '{ing}' at {store}.")
-
-        # Optional: use price history baseline if you can map ing -> item_id later
-        # (kept as a placeholder; not required for Tkinter compile pass)
-        if price_history_service:
-            # You can wire this once IngredientMappingService returns item_id
-            pass
-
-    if hits == 0:
+    rid = recipe.get("id")
+    if rid is None:
         return 0.0
 
-    # Normalize by ingredient count, capped
-    return min(1.0, score / max(1, len(ings)))
+    if rid in recently_used_recipe_ids:
+        return -0.2
+    return 0.0
+
+
+def _collect_all_ingredients(recipes: Sequence[Dict[str, Any]]) -> List[str]:
+    seen = set()
+    result: List[str] = []
+    for r in recipes:
+        for ing in _extract_core_ingredients(r):
+            low = ing.lower()
+            if low not in seen:
+                seen.add(low)
+                result.append(low)
+    return result
+
+
+def _fetch_deals_for_ingredients(
+    ingredients: Sequence[str],
+    max_age_days: int = 7,
+) -> Dict[str, List[Deal]]:
+    """
+    For each ingredient, call search_deals once and cache.
+    """
+    deals_by_ing: Dict[str, List[Deal]] = {}
+    for ing in ingredients:
+        try:
+            deals = search_deals(ing, max_age_days=max_age_days)
+        except Exception:
+            deals = []
+        deals_by_ing[ing.lower()] = deals
+    return deals_by_ing
 
 
 # ---------------------------------------------------------------------------
-# Main service
+# MealSuggestionService
 # ---------------------------------------------------------------------------
 
 
@@ -267,31 +299,26 @@ class MealSuggestionService:
         target_ingredients:
             - If provided, we first filter recipes using
               filter_recipes_by_ingredients_and_profile().
+            - If None/empty, we consider all recipes, and let scoring decide.
 
         max_recipes:
-            - How many to return.
+            Number of suggestions to return.
 
         recently_used_recipe_ids:
-            - Optional list/set of recipe IDs to slightly deprioritize.
-
-        Returns:
-            list[SuggestedMeal]
+            Optional set/list of recipe IDs cooked recently; helps encourage variety.
         """
-        profile = profile or get_user_profile()
+        if profile is None:
+            profile = get_user_profile()
 
-        # 1) Base recipe selection
-        recipes: List[Dict[str, Any]]
+        # 1) Get candidate recipes
         if target_ingredients:
             recipes = filter_recipes_by_ingredients_and_profile(
-                target_ingredients=target_ingredients,
+                include_ingredients=target_ingredients,
                 profile=profile,
-                recipe_engine=self.recipe_engine,
+                max_results=200,  # big enough, scoring will narrow down
             )
         else:
-            recipes = self.recipe_engine.load_all_recipes()
-
-        if not recipes:
-            return []
+            recipes = load_all_recipes()
 
         # Safety: re-check hard constraints, in case recipes.json changed
         filtered: List[Dict[str, Any]] = []
@@ -322,8 +349,6 @@ class MealSuggestionService:
             preference_score = _compute_preference_score(r, profile)
             variety_score = _compute_variety_score(r, recently_used_recipe_ids)
 
-            deal_score = 0.0  # TODO: flyer/Flipp deal scoring
-
             # Choice C weighting:
             #  - price_score       -> 0.5
             #  - preference_score  -> 0.3
@@ -340,9 +365,8 @@ class MealSuggestionService:
                 SuggestedMeal(
                     recipe=r,
                     total_score=total,
-                    preference_score=preference_score,
-                    deal_score=deal_score,
                     price_score=price_score,
+                    preference_score=preference_score,
                     variety_score=variety_score,
                     reasons=reasons,
                 )
@@ -351,12 +375,6 @@ class MealSuggestionService:
         # 4) Sort & truncate
         suggestions.sort(key=lambda s: s.total_score, reverse=True)
         return suggestions[:max_recipes]
-
-
-# ---------------------------------------------------------------------------
-# Explanation helpers (UI/debug)
-# ---------------------------------------------------------------------------
-
 
 def format_meal_explanation(
     recipe_name: str,
@@ -371,41 +389,42 @@ def format_meal_explanation(
     Build a human-readable explanation string for why a meal was suggested.
 
     This is intentionally generic and does NOT depend on any particular
-    dataclass type – you pass in the pieces you already have.
+    dataclass type – you pass in the pieces you already have:
+      - recipe_name:   display name of the recipe
+      - preference_score: how well it fits the user's preferences (0–1 or similar)
+      - deal_score:    how much current flyer deals helped this recipe
+      - price_score:   how good the current prices look vs historical
+      - variety_score: how much it improves variety vs recent meals
+      - reasons:       a flat list of specific human-readable bullet points
+      - max_reasons:   how many of those reasons to include
+
+    Returns:
+      A multi-line string you can show in UI, logs, or debug tools.
     """
+
     lines: list[str] = []
 
     lines.append(f"Why we suggested '{recipe_name}':")
 
+    # High-level summary line based on scores
     summary_bits: list[str] = []
 
-    if price_score >= 0.65:
-        summary_bits.append("strong value (deals/prices)")
-    elif price_score >= 0.35:
-        summary_bits.append("some value signals")
-
-    if preference_score >= 0.65:
-        summary_bits.append("fits your preferences")
-    elif preference_score >= 0.35:
-        summary_bits.append("partly matches your preferences")
-
-    if deal_score >= 0.35:
-        summary_bits.append("has flyer deal coverage")
-
-    if variety_score < 0:
-        summary_bits.append("recently cooked (slightly deprioritized)")
+    # You can tune these thresholds to your scoring scale
+    if preference_score > 0.3:
+        summary_bits.append("matches your eating preferences")
+    if deal_score > 0.2:
+        summary_bits.append("uses ingredients that are on sale this week")
+    if price_score > 0.2:
+        summary_bits.append("is cheaper than your usual prices")
+    if variety_score > 0.2:
+        summary_bits.append("adds variety compared to your recent meals")
 
     if summary_bits:
-        lines.append("Summary: " + "; ".join(summary_bits))
+        lines.append(" • " + "; ".join(summary_bits) + ".")
     else:
-        lines.append("Summary: general suggestion based on available signals.")
+        lines.append(" • Overall a reasonable match based on your profile and history.")
 
-    # Include scores for debugging/transparency
-    lines.append("")
-    lines.append(
-        f"Scores: price={price_score:.2f}  preference={preference_score:.2f}  deals={deal_score:.2f}  variety={variety_score:.2f}"
-    )
-
+    # Detailed bullet reasons (already assembled elsewhere)
     if reasons:
         lines.append("")
         lines.append("Details:")
@@ -414,18 +433,3 @@ def format_meal_explanation(
 
     return "\n".join(lines)
 
-
-def explain_suggested_meal(s: SuggestedMeal) -> str:
-    """UI helper: produce a readable explanation for a SuggestedMeal."""
-    if getattr(s, "explanation", None):
-        return str(s.explanation)
-
-    recipe_name = s.recipe.get("name") or s.recipe.get("title") or "Recipe"
-    return format_meal_explanation(
-        recipe_name=str(recipe_name),
-        preference_score=float(s.preference_score),
-        deal_score=float(s.deal_score),
-        price_score=float(s.price_score),
-        variety_score=float(s.variety_score),
-        reasons=list(s.reasons or []),
-    )

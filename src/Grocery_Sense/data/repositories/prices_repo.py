@@ -1,5 +1,5 @@
 """
-Grocery_Sense.data.repositories.prices_repo
+grocery_sense.data.repositories.prices_repo
 
 SQLite-backed persistence for PricePoint objects and basic price statistics.
 """
@@ -10,8 +10,8 @@ from typing import List, Optional, Tuple
 from contextlib import closing
 from datetime import datetime, timedelta
 
-from Grocery_Sense.data.connection import get_connection
-from Grocery_Sense.domain.models import PricePoint
+from grocery_sense.data.connection import get_connection
+from grocery_sense.domain.models import PricePoint
 
 
 # ---------- Row mapping helpers ----------

@@ -1,5 +1,5 @@
 """
-Grocery_Sense.recipes.recipe_engine
+grocery_sense.recipes.recipe_engine
 
 Shared recipe engine for Grocery Sense.
 

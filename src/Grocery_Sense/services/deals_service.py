@@ -1,5 +1,5 @@
 """
-Grocery_Sense.services.deals_service
+grocery_sense.services.deals_service
 
 Service for:
 - Fetching flyer-style deals (e.g. via Flipp or similar APIs)
@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
-from Grocery_Sense.config.config_store import (
+from grocery_sense.config_store import (
     get_postal_code,
     get_store_priority,
     cache_get,

@@ -6,7 +6,7 @@ from typing import Dict, List, Optional, Tuple
 
 from rapidfuzz import fuzz, process  # pip install rapidfuzz
 
-from Grocery_Sense.data.repositories.item_aliases_repo import ItemAliasesRepo
+from grocery_sense.data.item_aliases_repo import ItemAliasesRepo
 
 
 @dataclass

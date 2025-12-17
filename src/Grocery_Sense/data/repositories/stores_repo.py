@@ -1,5 +1,5 @@
 """
-Grocery_Sense.data.repositories.stores_repo
+grocery_sense.data.repositories.stores_repo
 
 SQLite-backed persistence for Store objects.
 """
@@ -10,8 +10,8 @@ from typing import List, Optional, Iterable
 from contextlib import closing
 from datetime import datetime
 
-from Grocery_Sense.data.connection import get_connection
-from Grocery_Sense.domain.models import Store
+from grocery_sense.data.connection import get_connection
+from grocery_sense.domain.models import Store
 
 
 # ---------- Row mapping helpers ----------

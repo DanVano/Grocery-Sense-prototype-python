@@ -1,5 +1,5 @@
 """
-Grocery_Sense.domain.models
+grocery_sense.domain.models
 
 Dataclasses representing the core domain objects of the Grocery Sense app.
 These are the types that repositories return and services operate on.

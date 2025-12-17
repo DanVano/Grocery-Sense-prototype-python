@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 # Name of the SQLite file
-DB_FILENAME = "Grocery_Sense.db"
+DB_FILENAME = "grocery_sense.db"
 
 
 def get_db_path(base_dir: Optional[Path] = None) -> Path:
@@ -22,7 +22,7 @@ def get_db_path(base_dir: Optional[Path] = None) -> Path:
     Return the full path to the DB file.
 
     If base_dir is None, we put the DB inside the 'db' directory next to this file:
-        src/grocery_sense/data/db/Grocery_Sense.db
+        src/grocery_sense/data/db/grocery_sense.db
     """
     if base_dir is None:
         base_dir = Path(__file__).resolve().parent / "db"

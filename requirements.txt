@@ -1,4 +1,1 @@
-python -m pip install requests
-python -m pip install rapidfuzz
-python -m pip install cachetools
-python -m pip install pytest
+pip install rapidfuzz
