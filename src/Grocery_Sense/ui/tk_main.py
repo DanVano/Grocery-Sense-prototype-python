@@ -30,6 +30,8 @@ from Grocery_Sense.services.weekly_planner_service import (
     summarize_weekly_plan,
 )
 from Grocery_Sense.services.planning_service import PlanningService
+from Grocery_Sense.services.demo_seed_service import seed_demo_data
+
 
 
 class GrocerySenseApp(tk.Tk):
@@ -104,6 +106,13 @@ class GrocerySenseApp(tk.Tk):
             command=self._safe_call(self._open_store_plan_window),
             width=35,
         ).grid(row=row, column=0, sticky="w", pady=2)
+	ttk.Button(
+    	    frame,
+    	    text="6) Seed Demo Data",
+    	    command=self._safe_call(self._seed_demo_data),
+    	    width=35,
+	).grid(row=row, column=0, sticky="w", pady=2)
+
 
     def _build_log_panel(self) -> None:
         self.log_box = ScrolledText(self, state=tk.NORMAL, height=12)
@@ -422,3 +431,7 @@ class GrocerySenseApp(tk.Tk):
 
             unassigned = plan.get("unassigned") or []
             if unassigned:
+
+        def _seed_demo_data(self) -> None:
+            result = seed_demo_data(reset_first=True, n_price_points=200, days_back=90, seed=42)
+            self._log(f"Demo seed complete: stores={result['stores']}, items={result['items']}, prices={result['price_points']}")
