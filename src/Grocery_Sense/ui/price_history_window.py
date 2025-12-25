@@ -201,32 +201,34 @@ class PriceHistoryWindow(tk.Toplevel):
     def _refresh_item_list(self) -> None:
         """
         Refresh combobox items based on search + tracked toggle.
+
+        Repo API:
+        list_items(include_untracked: bool = False)
         """
         try:
-            items = list_items(include_untracked=not bool(self.only_tracked_var.get()))
-
-            query = (self.search_var.get() or "").strip().lower()
-            if query:
-                items = [it for it in items if query in (it.canonical_name or "").lower()]
-
+            include_untracked = not bool(self.only_tracked_var.get())
+            items = list_items(include_untracked=include_untracked)
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load items.\n\n{e}")
             return
+
+        query = (self.search_var.get() or "").strip().lower()
 
         self._item_name_to_id.clear()
         self._item_names.clear()
 
         for it in items:
-            name = (it.canonical_name or "").strip()
+            name = (getattr(it, "canonical_name", "") or "").strip()
             if not name:
                 continue
-            self._item_name_to_id[name] = it.id
+            if query and query not in name.lower():
+                continue
+            self._item_name_to_id[name] = int(it.id)
             self._item_names.append(name)
 
         self._item_names.sort(key=lambda s: s.lower())
         self.item_combo["values"] = self._item_names
 
-        # Preserve selection if still present
         current = self.item_var.get().strip()
         if current and current in self._item_name_to_id:
             self.selected_item_id = self._item_name_to_id[current]
@@ -235,6 +237,7 @@ class PriceHistoryWindow(tk.Toplevel):
             self.selected_item_id = None
             self._clear_tables()
             self._update_best_store_label()
+
 
     def _select_first_item_if_any(self) -> None:
         if self._item_names:
