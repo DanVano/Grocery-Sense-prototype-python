@@ -8,14 +8,21 @@ Main menu:
 - Shopping List (Add / Check / Delete)
 - Meal Suggestions
 - Weekly Plan
-- Store Plan (NEW)
+- Receipt Import (Azure)
+- Receipt Browser (Delete/Undo)
+- Stores Management
+- Store Plan (with savings)
+- Price History Viewer
+- Item Manager
+- Flyer Import (Manual)
+- Seed Demo Data
 """
 
 from __future__ import annotations
 
 import traceback
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 from tkinter.scrolledtext import ScrolledText
 
 from Grocery_Sense.data.schema import initialize_database
@@ -32,14 +39,12 @@ from Grocery_Sense.services.weekly_planner_service import (
 from Grocery_Sense.services.planning_service import PlanningService
 from Grocery_Sense.services.demo_seed_service import seed_demo_data
 
+from Grocery_Sense.ui.flyer_import_window import open_flyer_import_window
 from Grocery_Sense.ui.item_manager_window import open_item_manager_window
 from Grocery_Sense.ui.receipt_import_window import open_receipt_import_window
 from Grocery_Sense.ui.receipt_browser_window import open_receipt_browser_window
 from Grocery_Sense.ui.store_plan_window import open_store_plan_window
 from Grocery_Sense.ui.price_history_window import open_price_history_window
-
-
-
 
 
 class GrocerySenseApp(tk.Tk):
@@ -66,105 +71,111 @@ class GrocerySenseApp(tk.Tk):
     # Base UI helpers
     # ------------------------------------------------------------------
 
-def _build_main_menu(self) -> None:
-    frame = ttk.Frame(self)
-    frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
+    def _build_main_menu(self) -> None:
+        frame = ttk.Frame(self)
+        frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
 
-    ttk.Label(frame, text="Grocery Sense - Main Menu", font=("Segoe UI", 14, "bold")).grid(
-        row=0, column=0, columnspan=2, sticky="w", pady=(0, 10)
-    )
+        ttk.Label(frame, text="Grocery Sense - Main Menu", font=("Segoe UI", 14, "bold")).grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 10)
+        )
 
-    row = 1
+        row = 1
 
-    ttk.Button(
-        frame,
-        text="1) Initialize / Verify Database",
-        command=self._safe_call(self._handle_init_db),
-        width=35,
-    ).grid(row=row, column=0, sticky="w", pady=2)
-    row += 1
+        ttk.Button(
+            frame,
+            text="1) Initialize / Verify Database",
+            command=self._safe_call(self._handle_init_db),
+            width=35,
+        ).grid(row=row, column=0, sticky="w", pady=2)
+        row += 1
 
-    ttk.Button(
-        frame,
-        text="2) Shopping List",
-        command=self._safe_call(self._open_shopping_list_window),
-        width=35,
-    ).grid(row=row, column=0, sticky="w", pady=2)
-    row += 1
+        ttk.Button(
+            frame,
+            text="2) Shopping List",
+            command=self._safe_call(self._open_shopping_list_window),
+            width=35,
+        ).grid(row=row, column=0, sticky="w", pady=2)
+        row += 1
 
-    ttk.Button(
-        frame,
-        text="3) Meal Suggestions",
-        command=self._safe_call(self._open_meal_suggestions_window),
-        width=35,
-    ).grid(row=row, column=0, sticky="w", pady=2)
-    row += 1
+        ttk.Button(
+            frame,
+            text="3) Meal Suggestions",
+            command=self._safe_call(self._open_meal_suggestions_window),
+            width=35,
+        ).grid(row=row, column=0, sticky="w", pady=2)
+        row += 1
 
-    ttk.Button(
-        frame,
-        text="4) Build Weekly Plan",
-        command=self._safe_call(self._open_weekly_plan_window),
-        width=35,
-    ).grid(row=row, column=0, sticky="w", pady=2)
-    row += 1
+        ttk.Button(
+            frame,
+            text="4) Build Weekly Plan",
+            command=self._safe_call(self._open_weekly_plan_window),
+            width=35,
+        ).grid(row=row, column=0, sticky="w", pady=2)
+        row += 1
 
-    ttk.Button(
-        frame,
-        text="5) Receipt Import (Azure)",
-        command=self._safe_call(lambda: open_receipt_import_window(self, log=self._log)),
-        width=35,
-    ).grid(row=row, column=0, sticky="w", pady=2)
-    row += 1
+        ttk.Button(
+            frame,
+            text="5) Receipt Import (Azure)",
+            command=self._safe_call(lambda: open_receipt_import_window(self, log=self._log)),
+            width=35,
+        ).grid(row=row, column=0, sticky="w", pady=2)
+        row += 1
 
-    ttk.Button(
-        frame,
-        text="6) Receipt Browser + Delete/Undo",
-        command=self._safe_call(lambda: open_receipt_browser_window(self, log=self._log)),
-        width=35,
-    ).grid(row=row, column=0, sticky="w", pady=2)
-    row += 1
+        ttk.Button(
+            frame,
+            text="6) Receipt Browser + Delete/Undo",
+            command=self._safe_call(lambda: open_receipt_browser_window(self, log=self._log)),
+            width=35,
+        ).grid(row=row, column=0, sticky="w", pady=2)
+        row += 1
 
-    ttk.Button(
-        frame,
-        text="7) Stores Management",
-        command=self._safe_call(self._open_stores_management_window),
-        width=35,
-    ).grid(row=row, column=0, sticky="w", pady=2)
-    row += 1
+        ttk.Button(
+            frame,
+            text="7) Stores Management",
+            command=self._safe_call(self._open_stores_management_window),
+            width=35,
+        ).grid(row=row, column=0, sticky="w", pady=2)
+        row += 1
 
-    ttk.Button(
-        frame,
-        text="8) Store Plan (with savings)",
-        command=self._safe_call(lambda: open_store_plan_window(self, log=self._log)),
-        width=35,
-    ).grid(row=row, column=0, sticky="w", pady=2)
-    row += 1
+        ttk.Button(
+            frame,
+            text="8) Store Plan (with savings)",
+            command=self._safe_call(lambda: open_store_plan_window(self, log=self._log)),
+            width=35,
+        ).grid(row=row, column=0, sticky="w", pady=2)
+        row += 1
 
-    ttk.Button(
-        frame,
-        text="9) Price History Viewer",
-        command=self._safe_call(lambda: open_price_history_window(self)),
-        width=35,
-    ).grid(row=row, column=0, sticky="w", pady=2)
-    row += 1
+        ttk.Button(
+            frame,
+            text="9) Price History Viewer",
+            command=self._safe_call(lambda: open_price_history_window(self)),
+            width=35,
+        ).grid(row=row, column=0, sticky="w", pady=2)
+        row += 1
 
-    ttk.Button(
-        frame,
-        text="10) Item Manager",
-        command=self._safe_call(lambda: open_item_manager_window(self, log=self._log)),
-        width=35,
-    ).grid(row=row, column=0, sticky="w", pady=2)
-    row += 1
+        ttk.Button(
+            frame,
+            text="10) Item Manager",
+            command=self._safe_call(lambda: open_item_manager_window(self, log=self._log)),
+            width=35,
+        ).grid(row=row, column=0, sticky="w", pady=2)
+        row += 1
 
-    ttk.Button(
-        frame,
-        text="11) Seed Demo Data",
-        command=self._safe_call(self._seed_demo_data),
-        width=35,
-    ).grid(row=row, column=0, sticky="w", pady=2)
-    row += 1
+        ttk.Button(
+            frame,
+            text="11) Flyer Import (Manual)",
+            command=self._safe_call(lambda: open_flyer_import_window(self, log=self._log)),
+            width=35,
+        ).grid(row=row, column=0, sticky="w", pady=2)
+        row += 1
 
-
+        ttk.Button(
+            frame,
+            text="12) Seed Demo Data",
+            command=self._safe_call(self._seed_demo_data),
+            width=35,
+        ).grid(row=row, column=0, sticky="w", pady=2)
+        row += 1
 
     def _build_log_panel(self) -> None:
         self.log_box = ScrolledText(self, state=tk.NORMAL, height=12)
@@ -172,8 +183,12 @@ def _build_main_menu(self) -> None:
         self._log("Log initialized.")
 
     def _log(self, message: str) -> None:
-        self.log_box.insert(tk.END, message + "\n")
-        self.log_box.see(tk.END)
+        try:
+            self.log_box.insert(tk.END, message + "\n")
+            self.log_box.see(tk.END)
+        except Exception:
+            # If log box isn't built yet
+            pass
 
     def _log_exception(self, prefix: str) -> None:
         self._log(prefix)
@@ -185,6 +200,7 @@ def _build_main_menu(self) -> None:
                 func()
             except Exception:
                 self._log_exception("ERROR:")
+                messagebox.showerror("Error", traceback.format_exc())
         return wrapper
 
     # ------------------------------------------------------------------
@@ -194,6 +210,31 @@ def _build_main_menu(self) -> None:
     def _handle_init_db(self) -> None:
         initialize_database()
         self._log("Database schema initialized / verified.")
+
+    def _open_stores_management_window(self) -> None:
+        """
+        You referenced this in the main menu.
+        If you already have a stores management window module, import and call it here.
+
+        For now: safe placeholder so the UI runs cleanly.
+        """
+        messagebox.showinfo(
+            "Stores Management",
+            "Stores Management screen is not wired in this tk_main.py yet.\n\n"
+            "If you have it already, tell me the module path (e.g. Grocery_Sense.ui.stores_management_window)\n"
+            "and I’ll hook it up.",
+        )
+
+    def _seed_demo_data(self) -> None:
+        result = seed_demo_data(reset_first=True, n_price_points=200, days_back=90, seed=42)
+        self._log(
+            f"Demo seed complete: stores={result['stores']}, "
+            f"items={result['items']}, prices={result['price_points']}"
+        )
+
+    # ------------------------------------------------------------------
+    # Shopping List window
+    # ------------------------------------------------------------------
 
     def _open_shopping_list_window(self) -> None:
         win = tk.Toplevel(self)
@@ -299,7 +340,7 @@ def _build_main_menu(self) -> None:
                 notes=None,
                 added_by="tk_ui",
                 item_id=None,
-                auto_map=True,  # ✅ mapping
+                auto_map=True,  # mapping
             )
             self._log(f"Added: {name} ({quantity or ''} {unit})")
             name_var.set("")
@@ -341,6 +382,10 @@ def _build_main_menu(self) -> None:
         refresh()
         name_entry.focus_set()
 
+    # ------------------------------------------------------------------
+    # Meal Suggestions
+    # ------------------------------------------------------------------
+
     def _open_meal_suggestions_window(self) -> None:
         win = tk.Toplevel(self)
         win.title("Meal Suggestions")
@@ -377,6 +422,10 @@ def _build_main_menu(self) -> None:
             details.insert(tk.END, explain_suggested_meal(s))
 
         listbox.bind("<<ListboxSelect>>", on_select)
+
+    # ------------------------------------------------------------------
+    # Weekly Plan
+    # ------------------------------------------------------------------
 
     def _open_weekly_plan_window(self) -> None:
         win = tk.Toplevel(self)
@@ -418,6 +467,10 @@ def _build_main_menu(self) -> None:
 
         build_plan()
 
+    # ------------------------------------------------------------------
+    # Store Plan (simple renderer)
+    # ------------------------------------------------------------------
+
     def _open_store_plan_window(self) -> None:
         win = tk.Toplevel(self)
         win.title("Store Plan")
@@ -458,14 +511,13 @@ def _build_main_menu(self) -> None:
             if not stores_struct:
                 output.insert(tk.END, "(No stores selected)\n")
             else:
-                # Sort stores by number of items desc
                 store_rows = []
                 for sid, payload in stores_struct.items():
                     items = payload.get("items") or []
                     store_rows.append((sid, payload, len(items)))
                 store_rows.sort(key=lambda x: x[2], reverse=True)
 
-                for sid, payload, _count in store_rows:
+                for _sid, payload, _count in store_rows:
                     st = payload.get("store")
                     items = payload.get("items") or []
                     if not st:
@@ -483,7 +535,23 @@ def _build_main_menu(self) -> None:
 
             unassigned = plan.get("unassigned") or []
             if unassigned:
+                output.insert(tk.END, "Unassigned:\n")
+                for it in unassigned:
+                    qty = "" if it.quantity is None else str(it.quantity)
+                    unit = "" if it.unit is None else str(it.unit)
+                    mapped = "" if it.item_id is None else f" [item_id={it.item_id}]"
+                    output.insert(tk.END, f"  - {it.display_name} {qty} {unit}{mapped}\n")
+                output.insert(tk.END, "\n")
 
-        def _seed_demo_data(self) -> None:
-            result = seed_demo_data(reset_first=True, n_price_points=200, days_back=90, seed=42)
-            self._log(f"Demo seed complete: stores={result['stores']}, items={result['items']}, prices={result['price_points']}")
+        ttk.Button(header, text="Refresh", command=self._safe_call(render_plan)).pack(side=tk.RIGHT)
+
+        render_plan()
+
+
+def main() -> None:
+    app = GrocerySenseApp()
+    app.mainloop()
+
+
+if __name__ == "__main__":
+    main()
