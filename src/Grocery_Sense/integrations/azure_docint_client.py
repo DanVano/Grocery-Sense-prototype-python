@@ -3,10 +3,17 @@ Grocery_Sense.integrations.azure_receipt_ingest
 
 Azure AI Document Intelligence (prebuilt-receipt) -> JSON -> DB ingest
 
-Now includes:
+Includes:
 - Dedupe layer:
   (1) file hash dedupe (no Azure call needed)
   (2) receipt signature dedupe (merchant+date+total) to catch rescans
+- Unit normalization v1:
+  - items.default_unit
+  - prices.norm_unit_price / prices.norm_unit / prices.norm_note
+  - lb <-> kg, g <-> kg
+- Multi-buy deal normalization v1:
+  - "2/$5", "3 for 10", "2 @ 4.00", "BOGO"
+  - compute effective unit price / corrected qty when possible
 
 Default behavior:
 - If duplicate found, DO NOT insert a new receipt.
@@ -36,6 +43,8 @@ from Grocery_Sense.data.repositories import items_repo as items_repo_module
 from Grocery_Sense.data.repositories.item_aliases_repo import ItemAliasesRepo
 from Grocery_Sense.data.repositories.stores_repo import create_store, list_stores
 from Grocery_Sense.services.ingredient_mapping_service import IngredientMappingService
+from Grocery_Sense.services.unit_normalization_service import UnitNormalizationService
+from Grocery_Sense.services.multibuy_deal_service import MultiBuyDealService
 
 
 # =============================================================================
@@ -458,6 +467,7 @@ def _upsert_item_from_mapping(raw_desc: str, mapping: Any) -> Tuple[int, Optiona
 
 
 def _insert_price_point(
+    *,
     item_id: int,
     store_id: int,
     receipt_id: int,
@@ -468,15 +478,24 @@ def _insert_price_point(
     total_price: Optional[float],
     raw_name: str,
     confidence_1_5: Optional[int],
+    norm_unit_price: Optional[float],
+    norm_unit: Optional[str],
+    norm_note: Optional[str],
 ) -> None:
+    """
+    Inserts into prices, including optional normalization fields.
+    Unit normalization schema is ensured by UnitNormalizationService.ensure_schema().
+    """
     with get_connection() as conn:
         conn.execute(
             """
             INSERT INTO prices (
                 item_id, store_id, receipt_id, flyer_source_id, source, date,
-                unit_price, unit, quantity, total_price, raw_name, confidence, created_at
+                unit_price, unit, quantity, total_price, raw_name, confidence,
+                norm_unit_price, norm_unit, norm_note,
+                created_at
             )
-            VALUES (?, ?, ?, NULL, 'receipt', ?, ?, ?, ?, ?, ?, ?, ?);
+            VALUES (?, ?, ?, NULL, 'receipt', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """,
             (
                 int(item_id),
@@ -489,6 +508,9 @@ def _insert_price_point(
                 total_price,
                 raw_name,
                 confidence_1_5,
+                norm_unit_price,
+                norm_unit,
+                norm_note,
                 _now_utc_iso(),
             ),
         )
@@ -571,7 +593,7 @@ def ingest_analyzed_receipt_into_db(
       - receipts row
       - receipt_raw_json row
       - receipt_line_items rows
-      - prices rows
+      - prices rows (with norm fields + multi-buy notes)
     Also links file_hash + signature to receipt for dedupe.
     """
     _ensure_ingest_tables()
@@ -603,7 +625,6 @@ def ingest_analyzed_receipt_into_db(
     tax = _currency_amount(tax_val)
     total = _currency_amount(total_val)
 
-    # Store signature AFTER insert (but we can compute now)
     signature = _make_receipt_signature(merchant_name, purchase_date, total)
 
     # overall confidence heuristic
@@ -634,6 +655,12 @@ def ingest_analyzed_receipt_into_db(
         accept_threshold=0.75,
     )
 
+    # Unit normalization + deal parsing
+    unit_norm = UnitNormalizationService()
+    unit_norm.ensure_schema()
+
+    deals = MultiBuyDealService()
+
     # Line items
     items_field = _pick_field(fields, ["Items", "ItemList", "LineItems"])
     value_array = items_field.get("valueArray") if isinstance(items_field, dict) else None
@@ -660,11 +687,26 @@ def ingest_analyzed_receipt_into_db(
         line_total = _currency_amount(total_price_val)
         discount = _currency_amount(discount_val)
 
+        # fill missing pieces
         if unit_price is None and line_total is not None and quantity:
             unit_price = float(line_total) / float(quantity)
         if line_total is None and unit_price is not None and quantity:
             line_total = float(unit_price) * float(quantity)
 
+        # Deal normalization (multi-buy, bogo, etc.)
+        adj = deals.adjust(
+            description=description,
+            quantity=quantity,
+            unit_price=unit_price,
+            line_total=line_total,
+            discount=discount,
+        )
+        quantity = adj.quantity
+        unit_price = adj.unit_price
+        line_total = adj.line_total
+        deal_note = adj.deal_note
+
+        # Confidence heuristic
         conf_candidates = [c for c in [desc_conf, qty_conf, unit_price_conf, total_price_conf, discount_conf] if isinstance(c, (int, float))]
         line_conf_float = (sum(float(x) for x in conf_candidates) / len(conf_candidates)) if conf_candidates else None
         line_conf_1_5 = _confidence_to_1_5(line_conf_float)
@@ -672,6 +714,13 @@ def ingest_analyzed_receipt_into_db(
         mapping = mapping_service.map_to_item(description)
         item_id, map_conf_1_5 = _upsert_item_from_mapping(description, mapping)
 
+        # Determine observed unit (best effort from text)
+        observed_unit = "each"
+        guessed = unit_norm.guess_unit_from_text(description)
+        if guessed != "unknown":
+            observed_unit = guessed
+
+        # Write line item row (store the adjusted values)
         _insert_receipt_line_item(
             receipt_id=receipt_id,
             line_index=idx,
@@ -684,18 +733,30 @@ def ingest_analyzed_receipt_into_db(
             confidence=line_conf_1_5 or map_conf_1_5,
         )
 
+        # Price point (only if we have an effective unit price)
         if unit_price is not None:
+            norm = unit_norm.normalize(
+                item_id=item_id,
+                unit_price=float(unit_price),
+                observed_unit=observed_unit,
+                description=description,
+            )
+            combined_note = f"{norm.note};{deal_note}" if deal_note else norm.note
+
             _insert_price_point(
                 item_id=item_id,
                 store_id=store_id,
                 receipt_id=receipt_id,
                 date=purchase_date,
                 unit_price=float(unit_price),
-                unit="each",
+                unit=observed_unit,
                 quantity=quantity,
                 total_price=line_total,
                 raw_name=description,
                 confidence_1_5=(line_conf_1_5 or map_conf_1_5),
+                norm_unit_price=float(norm.norm_unit_price) if norm.norm_unit_price is not None else None,
+                norm_unit=norm.norm_unit,
+                norm_note=combined_note,
             )
 
     # Link dedupe keys
@@ -741,7 +802,6 @@ def ingest_receipt_file_outcome(
     if existing is not None:
         if replace_existing:
             _delete_receipt_cascade(existing)
-            # continue ingest
             replaced = True
         else:
             return IngestOutcome(
@@ -770,7 +830,7 @@ def ingest_receipt_file_outcome(
             else:
                 # discard the new attempt (don’t add to DB)
                 try:
-                    az.saved_json_path.unlink(missing_ok=True)  # keep your raw folder clean
+                    az.saved_json_path.unlink(missing_ok=True)
                 except Exception:
                     pass
                 return IngestOutcome(
