@@ -203,10 +203,12 @@ class PriceHistoryWindow(tk.Toplevel):
         Refresh combobox items based on search + tracked toggle.
         """
         try:
-            items = list_items(
-                only_tracked=bool(self.only_tracked_var.get()),
-                search_text=self.search_var.get().strip() or None,
-            )
+            items = list_items(include_untracked=not bool(self.only_tracked_var.get()))
+
+            query = (self.search_var.get() or "").strip().lower()
+            if query:
+                items = [it for it in items if query in (it.canonical_name or "").lower()]
+
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load items.\n\n{e}")
             return
