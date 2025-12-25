@@ -32,6 +32,7 @@ from Grocery_Sense.services.weekly_planner_service import (
 from Grocery_Sense.services.planning_service import PlanningService
 from Grocery_Sense.services.demo_seed_service import seed_demo_data
 
+from Grocery_Sense.ui.item_manager_window import open_item_manager_window
 from Grocery_Sense.ui.receipt_import_window import open_receipt_import_window
 from Grocery_Sense.ui.receipt_browser_window import open_receipt_browser_window
 from Grocery_Sense.ui.store_plan_window import open_store_plan_window
@@ -149,7 +150,15 @@ def _build_main_menu(self) -> None:
 
     ttk.Button(
         frame,
-        text="10) Seed Demo Data",
+        text="10) Item Manager",
+        command=self._safe_call(lambda: open_item_manager_window(self, log=self._log)),
+        width=35,
+    ).grid(row=row, column=0, sticky="w", pady=2)
+    row += 1
+
+    ttk.Button(
+        frame,
+        text="11) Seed Demo Data",
         command=self._safe_call(self._seed_demo_data),
         width=35,
     ).grid(row=row, column=0, sticky="w", pady=2)
