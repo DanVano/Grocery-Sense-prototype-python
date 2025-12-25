@@ -1,5 +1,5 @@
 """
-grocery_sense.services.price_history_service
+Grocery_Sense.services.price_history_service
 
 Service layer for price history and "is this a good deal?" logic.
 
@@ -17,17 +17,17 @@ from dataclasses import asdict
 from datetime import datetime, date
 from typing import Optional, Dict, Any, Tuple, List
 
-from grocery_sense.data.repositories.items_repo import (
+from Grocery_Sense.data.repositories.items_repo import (
     get_item_by_name,
     get_item_by_id,
     create_item,
 )
-from grocery_sense.data.repositories.prices_repo import (
+from Grocery_Sense.data.repositories.prices_repo import (
     add_price_point,
     get_most_recent_price,
     get_price_stats_for_item,
 )
-from grocery_sense.domain.models import Item, PricePoint
+from Grocery_Sense.domain.models import Item, PricePoint
 
 
 class PriceHistoryService:

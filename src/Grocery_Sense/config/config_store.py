@@ -1,5 +1,5 @@
 """
-grocery_sense.config_store
+Grocery_Sense.config.config_store
 
 Centralized configuration & user profile management for Grocery Sense.
 
@@ -206,6 +206,27 @@ def set_store_priority(store_name: str, priority: int) -> None:
         priority = 0
     cfg.store_priority[name] = priority
     save_config(cfg)
+    
+    
+def get_store_priority(store_name: Optional[str] = None, default: int = 0) -> int:
+    """
+    Return a store priority for a given store name.
+
+    If store_name is None/blank, returns default.
+    Uses the store_priority dict in user_config.json.
+    """
+    if not store_name:
+        return int(default)
+
+    name = store_name.strip()
+    if not name:
+        return int(default)
+
+    priority_map = load_config().store_priority or {}
+    try:
+        return int(priority_map.get(name, default))
+    except Exception:
+        return int(default)
 
 
 def get_favorite_store_ids() -> List[int]:
@@ -217,6 +238,74 @@ def set_favorite_store_ids(store_ids: List[int]) -> None:
     cfg.favorite_store_ids = [int(sid) for sid in store_ids]
     save_config(cfg)
 
+def get_store_priority(store_name: Optional[str] = None, default: int = 0) -> int:
+    """
+    Return the priority for a store name from the user_config.json store_priority map.
+    If store_name is None/blank, returns default.
+    """
+    if not store_name:
+        return int(default)
+
+    name = str(store_name).strip()
+    if not name:
+        return int(default)
+
+    priority_map = load_config().store_priority or {}
+    try:
+        return int(priority_map.get(name, default))
+    except Exception:
+        return int(default)
+
+def cache_get(key: str, default: Any = None) -> Any:
+    """
+    Lightweight JSON-backed cache.
+    Stored under cfg.profile["_cache"] (a dict).
+    """
+    if not key:
+        return default
+    cfg = load_config()
+    profile = cfg.profile or {}
+    if not isinstance(profile, dict):
+        return default
+    cache = profile.get("_cache", {})
+    if not isinstance(cache, dict):
+        return default
+    return cache.get(key, default)
+
+
+def cache_set(key: str, value: Any) -> None:
+    """
+    Lightweight JSON-backed cache setter.
+    Stored under cfg.profile["_cache"] (a dict).
+    """
+    if not key:
+        return
+    cfg = load_config()
+    if not cfg.profile:
+        cfg.profile = default_profile()
+    if not isinstance(cfg.profile, dict):
+        cfg.profile = default_profile()
+
+    cache = cfg.profile.get("_cache")
+    if not isinstance(cache, dict):
+        cache = {}
+        cfg.profile["_cache"] = cache
+
+    cache[key] = value
+    save_config(cfg)
+
+
+def cache_delete(key: str) -> None:
+    if not key:
+        return
+    cfg = load_config()
+    profile = cfg.profile or {}
+    cache = profile.get("_cache", {}) if isinstance(profile, dict) else {}
+    if isinstance(cache, dict) and key in cache:
+        del cache[key]
+        profile["_cache"] = cache
+        cfg.profile = profile
+        save_config(cfg)
 
 # --- User profile --------------------------------------------------------
 

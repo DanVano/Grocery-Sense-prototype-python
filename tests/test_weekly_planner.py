@@ -9,18 +9,18 @@ Covers:
 - summarizing the weekly plan
 
 Run with:
-    python -m grocery_sense.tests.test_weekly_planner_smoke
+    python -m Grocery_Sense.tests.test_weekly_planner_smoke
 """
 
-from grocery_sense.data.connection import get_connection
-from grocery_sense.data.schema import initialize_database
-from grocery_sense.data.items_repo import ItemsRepository
-from grocery_sense.data.stores_repo import StoresRepository
-from grocery_sense.data.shopping_list_repo import ShoppingListRepository
+from Grocery_Sense.data.connection import get_connection
+from Grocery_Sense.data.schema import initialize_database
+from Grocery_Sense.data.repositories.items_repo import ItemsRepository
+from Grocery_Sense.data.repositories.stores_repo import StoresRepository
+from Grocery_Sense.data.repositories.shopping_list_repo import ShoppingListRepository
 
-from grocery_sense.services.meal_suggestion_service import MealSuggestionService
-from grocery_sense.services.shopping_list_service import ShoppingListService
-from grocery_sense.services.weekly_planner_service import (
+from Grocery_Sense.services.meal_suggestion_service import MealSuggestionService
+from Grocery_Sense.services.shopping_list_service import ShoppingListService
+from Grocery_Sense.services.weekly_planner_service import (
     WeeklyPlannerService,
     summarize_weekly_plan,
 )

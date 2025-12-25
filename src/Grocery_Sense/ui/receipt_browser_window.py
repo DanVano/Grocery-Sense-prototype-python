@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from fileinput import filename
 import json
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -265,7 +266,8 @@ class ReceiptBrowserWindow(tk.Toplevel):
 
         title = f"Raw JSON for receipt #{rid}"
         if json_path:
-            title += f" [{json_path.split('/')[-1].split('\\\\')[-1]}]"
+            filename = json_path.replace("\\", "/").split("/")[-1]
+            title += f" [{filename}]"
         _open_text_window(self, title, pretty)
 
     def delete_selected_receipt(self) -> None:

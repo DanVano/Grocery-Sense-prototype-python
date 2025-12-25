@@ -1,5 +1,5 @@
 """
-Grocery_Sense.integrations.azure_receipt_ingest
+Grocery_Sense.integrations.azure_docint_client
 
 Azure AI Document Intelligence (prebuilt-receipt) -> JSON -> DB ingest
 

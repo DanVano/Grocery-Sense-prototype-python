@@ -1,6 +1,6 @@
-from grocery_sense.data.schema import initialize_database
-from grocery_sense.data.items_repo import ItemsRepo
-from grocery_sense.services.ingredient_mapping_service import IngredientMappingService
+from Grocery_Sense.data.schema import initialize_database
+from Grocery_Sense.data.repositories.items_repo import ItemsRepo
+from Grocery_Sense.services.ingredient_mapping_service import IngredientMappingService
 
 def main():
     initialize_database()

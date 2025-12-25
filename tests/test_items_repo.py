@@ -2,13 +2,13 @@
 Smoke tests for ItemsRepository, especially find_best_match.
 
 Run with:
-    python -m grocery_sense.tests.test_items_repo_smoke
+    python -m Grocery_Sense.tests.test_items_repo_smoke
 from the src/ directory (where grocery_sense/ package lives).
 """
 
-from grocery_sense.data.connection import get_connection
-from grocery_sense.data.schema import initialize_database
-from grocery_sense.data.items_repo import ItemsRepository
+from Grocery_Sense.data.connection import get_connection
+from Grocery_Sense.data.schema import initialize_database
+from Grocery_Sense.data.repositories.items_repo import ItemsRepository
 
 
 def seed_sample_items(repo: ItemsRepository) -> None:

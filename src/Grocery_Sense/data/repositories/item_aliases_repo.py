@@ -4,7 +4,8 @@ from dataclasses import dataclass
 from typing import Optional, List
 from datetime import datetime, timezone
 
-from .connection import get_connection
+from Grocery_Sense.data.connection import get_connection
+
 
 
 @dataclass

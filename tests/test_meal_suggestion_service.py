@@ -2,10 +2,10 @@
 Smoke tests for MealSuggestionService and explain_suggested_meal.
 
 Run with:
-    python -m grocery_sense.tests.test_meal_suggestion_service_smoke
+    python -m Grocery_Sense.tests.test_meal_suggestion_service_smoke
 """
 
-from grocery_sense.services.meal_suggestion_service import (
+from Grocery_Sense.services.meal_suggestion_service import (
     MealSuggestionService,
     explain_suggested_meal,
 )

@@ -14,7 +14,7 @@ from tkinter.scrolledtext import ScrolledText
 from Grocery_Sense.data.connection import get_connection
 
 # Updated import: use outcome-based ingest (dedupe + optional replace)
-from Grocery_Sense.integrations.azure_receipt_ingest import (
+from Grocery_Sense.integrations.azure_docint_client import (
     ingest_receipt_file_outcome,
     ingest_analyzed_receipt_into_db,
 )

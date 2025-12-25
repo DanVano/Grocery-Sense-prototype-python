@@ -1,5 +1,5 @@
 """
-grocery_sense.services.meal_suggestion_service
+Grocery_Sense.services.meal_suggestion_service
 
 High-level engine for suggesting value-focused meals for the week.
 
@@ -18,13 +18,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from grocery_sense.config_store import get_user_profile
-from grocery_sense.recipes.recipe_engine import (
+from Grocery_Sense.config.config_store import get_user_profile
+from Grocery_Sense.recipes.recipe_engine import (
     RecipeEngine,
     load_all_recipes,
     filter_recipes_by_ingredients_and_profile,
 )
-from grocery_sense.services.deals_service import Deal, search_deals
+from Grocery_Sense.services.deals_service import Deal, search_deals
 
 
 # ---------------------------------------------------------------------------

@@ -28,10 +28,8 @@ from tkinter.scrolledtext import ScrolledText
 from Grocery_Sense.data.schema import initialize_database
 
 from Grocery_Sense.services.shopping_list_service import ShoppingListService
-from Grocery_Sense.services.meal_suggestion_service import (
-    MealSuggestionService,
-    explain_suggested_meal,
-)
+from Grocery_Sense.services.meal_suggestion_service import MealSuggestionService
+
 from Grocery_Sense.services.weekly_planner_service import (
     WeeklyPlannerService,
     summarize_weekly_plan,
@@ -61,7 +59,8 @@ class GrocerySenseApp(tk.Tk):
             meal_suggestion_service=self.meal_suggestion_service,
             shopping_list_service=self.shopping_list_service,
         )
-        self.planning_service = PlanningService(self.shopping_list_service)
+        self.planning_service = PlanningService()
+
 
         self._build_main_menu()
         self._build_log_panel()
