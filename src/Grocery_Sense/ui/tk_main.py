@@ -32,6 +32,12 @@ from Grocery_Sense.services.weekly_planner_service import (
 from Grocery_Sense.services.planning_service import PlanningService
 from Grocery_Sense.services.demo_seed_service import seed_demo_data
 
+from Grocery_Sense.ui.receipt_import_window import open_receipt_import_window
+from Grocery_Sense.ui.store_plan_window import open_store_plan_window
+from Grocery_Sense.ui.price_history_window import open_price_history_window
+
+
+
 
 
 class GrocerySenseApp(tk.Tk):
@@ -100,12 +106,38 @@ class GrocerySenseApp(tk.Tk):
         ).grid(row=row, column=0, sticky="w", pady=2)
         row += 1
 
+	ttk.Button(
+    	    frame,
+            text="Receipt Import (Azure)",
+    	    command=lambda: open_receipt_import_window(self, log=self._log),
+    	    width=35,
+	).grid(row=row, column=0, sticky="w", pady=2)
+	row += 1
+
         ttk.Button(
             frame,
             text="5) Store Plan (NEW)",
             command=self._safe_call(self._open_store_plan_window),
             width=35,
         ).grid(row=row, column=0, sticky="w", pady=2)
+
+	ttk.Button(
+    	    frame,
+    	    text="Store Plan (with savings)",
+    	    command=lambda: open_store_plan_window(self, log=self._log),
+    	    width=35,
+	).grid(row=row, column=0, sticky="w", pady=2)
+	row += 1
+
+	ttk.Button(
+    	    frame,
+    	    text="Price History Viewer",
+    	    command=self._safe_call(lambda: open_price_history_window(self)),
+    	    width=35,
+	).grid(row=row, column=0, sticky="w", pady=2)
+	row += 1
+
+
 	ttk.Button(
     	    frame,
     	    text="6) Seed Demo Data",
