@@ -29,7 +29,7 @@ class PriceDropAlertService:
 
     Rules (v1):
       - Only items where items.is_tracked = 1
-      - Compare observed receipt unit_price to avg over last N days (default 30)
+      - Compare observed receipt unit_price to avg over last N days (default 45)
       - Prefer same-store average if enough samples; otherwise fallback to overall average
       - Require min_samples (default 3)
       - Trigger if percent_drop >= threshold_percent (default 20%)
@@ -73,7 +73,7 @@ class PriceDropAlertService:
         receipt_id: int,
         *,
         threshold_percent: float = 20.0,
-        window_days: int = 30,
+        window_days: int = 45,
         min_samples: int = 3,
     ) -> AlertCreateResult:
         """
@@ -162,7 +162,7 @@ class PriceDropAlertService:
         *,
         receipts_days_back: int = 7,
         threshold_percent: float = 20.0,
-        window_days: int = 30,
+        window_days: int = 45,
         min_samples: int = 3,
     ) -> AlertCreateResult:
         """
