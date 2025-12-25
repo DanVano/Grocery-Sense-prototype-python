@@ -1,3 +1,4 @@
-pip install rapidfuzz
-pip install requests
-pip install azure-ai-documentintelligence
+rapidfuzz
+requests
+azure-ai-documentintelligence
+azure-core
