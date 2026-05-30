@@ -37,8 +37,7 @@ def _iso_days_ago(n: int) -> str:
 
 @pytest.fixture
 def svc(isolated_db) -> PriceDropAlertService:
-    # PriceDropAlertService doesn't honour _TEST_DB_PATH automatically; pass it in.
-    return PriceDropAlertService(db_path=_conn._TEST_DB_PATH)
+    return PriceDropAlertService()
 
 
 @pytest.fixture

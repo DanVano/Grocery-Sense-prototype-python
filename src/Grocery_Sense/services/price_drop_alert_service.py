@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from Grocery_Sense.data.connection import get_db_path as _get_db_path
+from Grocery_Sense.data.connection import get_connection
 from Grocery_Sense.data.repositories import stores_repo, prices_repo
 from Grocery_Sense.data.repositories.items_repo import get_items_by_ids
 from Grocery_Sense.data.repositories.prices_repo import (
@@ -113,8 +113,7 @@ class PriceDropAlertService:
 
     MIN_RECEIPT_SAMPLES_FOR_USUAL = 4
 
-    def __init__(self, *, db_path: Optional[str] = None, log=None) -> None:
-        self._db_path = db_path or str(_get_db_path())
+    def __init__(self, *, log=None) -> None:
         self._log = log
         self._ensure_tables()
 
@@ -237,7 +236,7 @@ class PriceDropAlertService:
                 pct_below_usual = ((usual_price - best_unit) / usual_price) * 100.0
 
             pct_above_low: Optional[float] = None
-            if six_low is not None and six_low > 0:
+            if six_low is not None and six_low >= 0.05:
                 pct_above_low = ((best_unit - six_low) / six_low) * 100.0
 
             last_seen_at_or_below = last_seen_map.get(item_id)
@@ -318,7 +317,7 @@ class PriceDropAlertService:
 
     def get_open_alerts(self) -> List[Dict[str, Any]]:
         self._ensure_tables()
-        with sqlite3.connect(self._db_path) as conn:
+        with get_connection() as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
@@ -332,7 +331,7 @@ class PriceDropAlertService:
 
     def dismiss_alert(self, alert_id: int) -> None:
         self._ensure_tables()
-        with sqlite3.connect(self._db_path) as conn:
+        with get_connection() as conn:
             conn.execute(
                 """
                 UPDATE price_drop_alerts
@@ -355,7 +354,7 @@ class PriceDropAlertService:
         since = (datetime.now() - timedelta(days=int(max(1, days)))).strftime("%Y-%m-%d")
 
         inserted = 0
-        with sqlite3.connect(self._db_path) as conn:
+        with get_connection() as conn:
             conn.row_factory = sqlite3.Row
 
             rows = conn.execute(
@@ -367,6 +366,7 @@ class PriceDropAlertService:
                   AND p.unit_price IS NOT NULL
                   AND date(COALESCE(p.date, p.created_at)) >= date(?)
                 ORDER BY when_iso DESC
+                LIMIT 50000
                 """,
                 (since,),
             ).fetchall()
@@ -386,6 +386,7 @@ class PriceDropAlertService:
             )
             six_low_map = get_six_month_low_batch(unique_item_ids, since_days=self.LOW_LOOKBACK_DAYS)
 
+            batch: List[Tuple[Any, ...]] = []
             for r in rows:
                 item_id = int(r["item_id"])
                 store_id = int(r["store_id"] or 0)
@@ -408,7 +409,7 @@ class PriceDropAlertService:
                     continue
 
                 six_low, six_low_when = six_low_map.get(item_id, (None, None))
-                pct_above_low = ((paid - six_low) / six_low) * 100.0 if (six_low and six_low > 0) else None
+                pct_above_low = ((paid - six_low) / six_low) * 100.0 if (six_low and six_low >= 0.05) else None
 
                 kind = "below_usual"
                 key = AlertKey(item_id=item_id, store_id=store_id, alert_kind=kind)
@@ -430,7 +431,28 @@ class PriceDropAlertService:
                     low_when=six_low_when,
                 )
 
-                conn.execute(
+                batch.append((
+                    item_id,
+                    store_id,
+                    store_name,
+                    str(item.canonical_name),
+                    float(paid),
+                    float(usual),
+                    float(pct_below),
+                    float(six_low) if six_low is not None else None,
+                    float(pct_above_low) if pct_above_low is not None else None,
+                    kind,
+                    0,
+                    int(samples),
+                    basis,
+                    "receipt",
+                    None,
+                    notes,
+                ))
+                inserted += 1
+
+            if batch:
+                conn.executemany(
                     """
                     INSERT INTO price_drop_alerts
                     (item_id, store_id, store_name, item_name, current_price, usual_price, pct_below_usual,
@@ -438,26 +460,8 @@ class PriceDropAlertService:
                      last_seen_at_or_below, notes, created_at, status)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), 'open')
                     """,
-                    (
-                        item_id,
-                        store_id,
-                        store_name,
-                        str(item.canonical_name),
-                        float(paid),
-                        float(usual),
-                        float(pct_below),
-                        float(six_low) if six_low is not None else None,
-                        float(pct_above_low) if pct_above_low is not None else None,
-                        kind,
-                        0,
-                        int(samples),
-                        basis,
-                        "receipt",
-                        None,
-                        notes,
-                    ),
+                    batch,
                 )
-                inserted += 1
 
             conn.commit()
 
@@ -466,7 +470,7 @@ class PriceDropAlertService:
     # ----------------------- internals -----------------------
 
     def _ensure_tables(self) -> None:
-        with sqlite3.connect(self._db_path) as conn:
+        with get_connection() as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS price_drop_alerts (
@@ -495,6 +499,10 @@ class PriceDropAlertService:
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_price_drop_alerts_status ON price_drop_alerts(status)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_price_drop_alerts_created_at ON price_drop_alerts(created_at)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_price_drop_alerts_dismissed "
+                "ON price_drop_alerts(dismissed_at) WHERE dismissed_at IS NOT NULL"
+            )
             conn.commit()
 
             # Lightweight "migration": add missing columns if older table exists
@@ -525,7 +533,7 @@ class PriceDropAlertService:
     def _persist_engine_alerts(self, alerts: List[Dict[str, Any]]) -> int:
         self._ensure_tables()
 
-        with sqlite3.connect(self._db_path) as conn:
+        with get_connection() as conn:
             conn.row_factory = sqlite3.Row
             dismissed_keys = self._load_recent_dismissed_keys(conn)
 
@@ -601,7 +609,9 @@ class PriceDropAlertService:
                 dt = datetime.strptime(str(last_seen_iso)[:19], "%Y-%m-%d %H:%M:%S")
             except Exception:
                 return True
-        return (datetime.now() - dt).days >= int(self.STOCK_UP_COOLDOWN_DAYS)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - dt).days >= int(self.STOCK_UP_COOLDOWN_DAYS)
 
     def _build_notes(
         self,
