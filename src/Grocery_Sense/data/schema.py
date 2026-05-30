@@ -84,6 +84,9 @@ def create_tables(conn: sqlite3.Connection) -> None:
         ON receipts(store_id, purchase_date);
         """
     )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_receipts_purchase_date ON receipts(purchase_date);"
+    )
 
     # --- flyer_sources ---
     cur.execute(
@@ -156,6 +159,13 @@ def create_tables(conn: sqlite3.Connection) -> None:
         ON prices(source, date);
         """
     )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_prices_date ON prices(date);"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_prices_item_coalesced "
+        "ON prices(item_id, date(COALESCE(date, created_at)));"
+    )
 
     # --- receipt_line_items ---
     cur.execute(
@@ -182,6 +192,10 @@ def create_tables(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_receipt_line_items_receipt_id
         ON receipt_line_items(receipt_id);
         """
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_receipt_line_items_item_id "
+        "ON receipt_line_items(item_id);"
     )
 
     # --- Fuzzy matching ---
@@ -271,7 +285,167 @@ def create_tables(conn: sqlite3.Connection) -> None:
         """
     )
 
+    # --- deleted_receipt_backups (Undo) ---
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS deleted_receipt_backups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            original_receipt_id INTEGER,
+            deleted_at TEXT NOT NULL,
+            backup_json TEXT NOT NULL
+        );
+        """
+    )
+
+    # --- receipt_raw_json (canonical: id PK + UNIQUE(receipt_id)) ---
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS receipt_raw_json (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            receipt_id   INTEGER NOT NULL UNIQUE,
+            operation_id TEXT,
+            json_path    TEXT,
+            raw_json     TEXT,
+            created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (receipt_id) REFERENCES receipts(id) ON DELETE CASCADE
+        );
+        """
+    )
+
+    # --- receipt_file_hashes (canonical: id PK + UNIQUE(file_hash)) ---
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS receipt_file_hashes (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_hash   TEXT NOT NULL UNIQUE,
+            receipt_id  INTEGER NOT NULL,
+            file_path   TEXT,
+            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (receipt_id) REFERENCES receipts(id) ON DELETE CASCADE
+        );
+        """
+    )
+
+    # --- receipt_signatures (canonical: id PK + UNIQUE(signature)) ---
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS receipt_signatures (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            signature   TEXT NOT NULL UNIQUE,
+            receipt_id  INTEGER NOT NULL,
+            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (receipt_id) REFERENCES receipts(id) ON DELETE CASCADE
+        );
+        """
+    )
+
     conn.commit()
+
+
+def _table_first_col(conn: sqlite3.Connection, table: str) -> Optional[str]:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    if not rows:
+        return None
+    return rows[0][1]
+
+
+def _has_unique_on(conn: sqlite3.Connection, table: str, col: str) -> bool:
+    """True if there is a UNIQUE index covering exactly `col` on `table`."""
+    indexes = conn.execute(f"PRAGMA index_list({table})").fetchall()
+    for idx in indexes:
+        # idx columns: (seq, name, unique, origin, partial)
+        if not idx[2]:
+            continue
+        info = conn.execute(f"PRAGMA index_info({idx[1]})").fetchall()
+        # info columns: (seqno, cid, name)
+        if len(info) == 1 and info[0][2] == col:
+            return True
+    return False
+
+
+def _migrate_receipt_support_tables(conn: sqlite3.Connection) -> None:
+    """Rebuild legacy variants of receipt_raw_json / receipt_file_hashes /
+    receipt_signatures into the canonical (id PK + UNIQUE natural-key) shape.
+
+    Handles two legacy shapes:
+      (a) azure_docint pre-canonical: natural-key column was the PRIMARY KEY.
+      (b) receipts_repo pre-canonical: id PK already, but no UNIQUE on
+          receipt_raw_json.receipt_id (signatures/file_hashes already UNIQUE).
+    """
+    cur = conn.cursor()
+
+    # FK enforcement must be off during structural rebuild per SQLite docs.
+    cur.execute("PRAGMA foreign_keys = OFF;")
+    try:
+        # --- receipt_raw_json ---
+        first = _table_first_col(conn, "receipt_raw_json")
+        if first is not None:
+            needs_rebuild = first != "id" or not _has_unique_on(conn, "receipt_raw_json", "receipt_id")
+            if needs_rebuild:
+                cur.executescript(
+                    """
+                    CREATE TABLE receipt_raw_json__new (
+                        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                        receipt_id   INTEGER NOT NULL UNIQUE,
+                        operation_id TEXT,
+                        json_path    TEXT,
+                        raw_json     TEXT,
+                        created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+                        FOREIGN KEY (receipt_id) REFERENCES receipts(id) ON DELETE CASCADE
+                    );
+                    INSERT INTO receipt_raw_json__new (receipt_id, operation_id, json_path, raw_json, created_at)
+                        SELECT receipt_id, operation_id, json_path, raw_json, created_at
+                        FROM receipt_raw_json
+                        WHERE rowid IN (
+                            SELECT MAX(rowid) FROM receipt_raw_json GROUP BY receipt_id
+                        );
+                    DROP TABLE receipt_raw_json;
+                    ALTER TABLE receipt_raw_json__new RENAME TO receipt_raw_json;
+                    """
+                )
+
+        # --- receipt_file_hashes ---
+        first = _table_first_col(conn, "receipt_file_hashes")
+        if first is not None and first != "id":
+            cur.executescript(
+                """
+                CREATE TABLE receipt_file_hashes__new (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    file_hash   TEXT NOT NULL UNIQUE,
+                    receipt_id  INTEGER NOT NULL,
+                    file_path   TEXT,
+                    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                    FOREIGN KEY (receipt_id) REFERENCES receipts(id) ON DELETE CASCADE
+                );
+                INSERT INTO receipt_file_hashes__new (file_hash, receipt_id, file_path, created_at)
+                    SELECT file_hash, receipt_id, file_path, created_at FROM receipt_file_hashes;
+                DROP TABLE receipt_file_hashes;
+                ALTER TABLE receipt_file_hashes__new RENAME TO receipt_file_hashes;
+                """
+            )
+
+        # --- receipt_signatures ---
+        first = _table_first_col(conn, "receipt_signatures")
+        if first is not None and first != "id":
+            cur.executescript(
+                """
+                CREATE TABLE receipt_signatures__new (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    signature   TEXT NOT NULL UNIQUE,
+                    receipt_id  INTEGER NOT NULL,
+                    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                    FOREIGN KEY (receipt_id) REFERENCES receipts(id) ON DELETE CASCADE
+                );
+                INSERT INTO receipt_signatures__new (signature, receipt_id, created_at)
+                    SELECT signature, receipt_id, created_at FROM receipt_signatures;
+                DROP TABLE receipt_signatures;
+                ALTER TABLE receipt_signatures__new RENAME TO receipt_signatures;
+                """
+            )
+
+        conn.commit()
+    finally:
+        cur.execute("PRAGMA foreign_keys = ON;")
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -289,6 +463,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
             cur.execute(sql)
 
     conn.commit()
+    _migrate_receipt_support_tables(conn)
 
 
 def initialize_database(base_dir: Optional[Path] = None) -> None:

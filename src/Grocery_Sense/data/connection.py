@@ -79,6 +79,14 @@ def get_connection(base_dir: Optional[Path] = None) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row  # nicer dict-like access
     conn.execute("PRAGMA foreign_keys = ON")
+    if str(db_path) not in _integrity_checked and str(db_path) != ":memory:":
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
     _check_integrity(conn, db_path)
     return conn
+
+
+def reset_integrity_cache() -> None:
+    """Clear the integrity-checked cache (test helper)."""
+    _integrity_checked.clear()
 
