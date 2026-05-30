@@ -91,7 +91,10 @@ class TestLoadAllRecipes:
             "Salmon Teriyaki",
         }
 
-    def test_cache_avoids_reread_without_force_reload(self, tmp_path):
+    def test_cache_reloads_when_file_mtime_changes(self, tmp_path):
+        """Per M-64 the cache is mtime-invalidated: edits at runtime are picked
+        up automatically, without needing force_reload."""
+        import os
         path = tmp_path / "recipes.json"
         path.write_text(json.dumps([{"name": "A", "ingredients": ["x"]}]), encoding="utf-8")
         eng = RecipeEngine(recipes_path=path)
@@ -99,17 +102,21 @@ class TestLoadAllRecipes:
         first = eng.load_all_recipes()
         assert len(first) == 1
 
-        # Rewrite with different contents; cache should mask the change.
+        # Rewrite with different contents AND bump mtime to ensure the change
+        # is visible regardless of filesystem mtime granularity.
         path.write_text(
             json.dumps([{"name": "A"}, {"name": "B", "ingredients": ["y"]}]),
             encoding="utf-8",
         )
-        cached = eng.load_all_recipes()
-        assert len(cached) == 1
+        new_mtime = path.stat().st_mtime + 5
+        os.utime(path, (new_mtime, new_mtime))
 
-        # force_reload picks up the new file.
-        reloaded = eng.load_all_recipes(force_reload=True)
+        reloaded = eng.load_all_recipes()
         assert len(reloaded) == 2
+
+        # force_reload also still works.
+        reloaded_forced = eng.load_all_recipes(force_reload=True)
+        assert len(reloaded_forced) == 2
 
     def test_missing_file_returns_empty(self, tmp_path):
         eng = RecipeEngine(recipes_path=tmp_path / "nope.json")

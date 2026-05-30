@@ -249,6 +249,17 @@ def _strong_soft_threshold(n_members: int, s_count: int) -> bool:
 # Baseline + effective merging (household = master defaults)
 # ---------------------------------------------------------------------------
 
+_eff_cache: Optional[EffectivePreferences] = None
+_eff_cache_key: Optional[tuple] = None
+
+
+def _invalidate_effective_cache() -> None:
+    """Called by config_store.save_config to drop stale cached prefs."""
+    global _eff_cache, _eff_cache_key
+    _eff_cache = None
+    _eff_cache_key = None
+
+
 def compute_effective_preferences() -> EffectivePreferences:
     """
     Merge household preferences.
@@ -262,6 +273,18 @@ def compute_effective_preferences() -> EffectivePreferences:
     - Protein weights/cuisines/oils come from baseline (master)
     - Strong soft excludes computed from SECONDARY consensus
     """
+    global _eff_cache, _eff_cache_key
+
+    # mtime-keyed cache: invalidates automatically whenever user_config.json
+    # changes on disk; save_config also calls _invalidate_effective_cache.
+    try:
+        st = config_store._CONFIG_FILE.stat()
+        cache_key = (st.st_mtime, st.st_size)
+    except Exception:
+        cache_key = None
+    if _eff_cache is not None and cache_key == _eff_cache_key:
+        return _eff_cache
+
     cfg = config_store.load_config()
     members = _get_members(cfg)
     master = _get_master_member()
@@ -343,6 +366,8 @@ def compute_effective_preferences() -> EffectivePreferences:
         if _strong_soft_threshold(n_members, s_count):
             eff.strong_soft_proteins.add(prot)
 
+    _eff_cache = eff
+    _eff_cache_key = cache_key
     return eff
 
 

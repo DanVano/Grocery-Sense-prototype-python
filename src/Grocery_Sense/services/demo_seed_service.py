@@ -18,6 +18,7 @@ Usage:
 from __future__ import annotations
 
 import random
+import sqlite3
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Dict, List, Optional, Tuple
@@ -132,14 +133,38 @@ def reset_all_demo_data() -> None:
     with get_connection() as conn:
         cur = conn.cursor()
 
-        # child → parent order
-        cur.execute("DELETE FROM prices;")
-        cur.execute("DELETE FROM receipts;")
-        cur.execute("DELETE FROM flyer_sources;")
-        cur.execute("DELETE FROM shopping_list;")
-        cur.execute("DELETE FROM item_aliases;")
-        cur.execute("DELETE FROM items;")
-        cur.execute("DELETE FROM stores;")
+        # child → parent order. Tables added since v0 may not exist on an
+        # ancient DB; guard each with a try/except so the reset stays robust.
+        _optional_tables = (
+            "prices",
+            "receipt_line_items",
+            "receipt_raw_json",
+            "receipt_file_hashes",
+            "receipt_signatures",
+            "deleted_receipt_backups",
+            "receipts",
+            "flyer_deals",
+            "flyer_assets",
+            "flyer_raw_json",
+            "flyer_batches",
+            "price_drop_alerts",
+            "flyer_sources",
+            "shopping_list",
+            "item_aliases",
+            "items",
+            "stores",
+        )
+        for tbl in _optional_tables:
+            try:
+                cur.execute(f"DELETE FROM {tbl};")
+            except sqlite3.OperationalError:
+                pass
+
+        # Reset autoincrement counters so reseeded ids start from 1
+        try:
+            cur.execute("DELETE FROM sqlite_sequence;")
+        except sqlite3.OperationalError:
+            pass
 
         conn.commit()
 

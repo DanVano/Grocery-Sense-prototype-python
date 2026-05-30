@@ -3,9 +3,8 @@ Preferences autouse isolation.
 
 config_store reads/writes a JSON file at src/Grocery_Sense/config/user_config.json
 and a cache file at src/Grocery_Sense/config/deals_cache.json. It also holds
-a module-level cache (_config_cache / _config_mtime) that persists across
-test calls unless cleared. This fixture redirects both files to tmp_path
-and resets the cache on every test.
+module-level caches that persist across test calls unless cleared. This
+fixture redirects both files to tmp_path and resets the caches on every test.
 """
 
 from __future__ import annotations
@@ -23,8 +22,17 @@ def tmp_config_file(tmp_path, monkeypatch):
     monkeypatch.setattr(config_store, "_CONFIG_FILE", f)
     monkeypatch.setattr(config_store, "_CACHE_FILE", cache)
 
-    # Clear the module-level cache so each test starts fresh.
+    # Clear the module-level caches so each test starts fresh.
     monkeypatch.setattr(config_store, "_config_cache", None)
-    monkeypatch.setattr(config_store, "_config_mtime", None)
+    monkeypatch.setattr(config_store, "_config_mtime_key", None)
+    monkeypatch.setattr(config_store, "_deals_cache", None)
+    monkeypatch.setattr(config_store, "_deals_cache_key", None)
+
+    # Drop any cached EffectivePreferences keyed off the now-redirected file.
+    try:
+        from Grocery_Sense.services import preferences_service
+        preferences_service._invalidate_effective_cache()
+    except Exception:
+        pass
 
     return f

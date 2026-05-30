@@ -341,8 +341,19 @@ def _read_raw_config() -> Dict[str, Any]:
 
 
 def _write_raw_config(data: Dict[str, Any]) -> None:
-    with _CONFIG_FILE.open("w", encoding="utf-8") as f:
+    # Atomic write via temp-file + rename so a crash mid-write doesn't leave
+    # an empty/partial user_config.json (which would silently reset the user's
+    # household / preferences on next launch).
+    import os as _os
+    tmp = _CONFIG_FILE.with_suffix(_CONFIG_FILE.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, sort_keys=True)
+        f.flush()
+        try:
+            _os.fsync(f.fileno())
+        except Exception:
+            pass
+    tmp.replace(_CONFIG_FILE)
 
 
 def _member_from_raw(raw: Dict[str, Any]) -> HouseholdMember:
@@ -412,25 +423,44 @@ def _to_raw_config(cfg: UserConfig) -> Dict[str, Any]:
 # Public config API
 # ---------------------------------------------------------------------------
 
+import threading as _threading
 _config_cache: Optional[UserConfig] = None
-_config_mtime: Optional[float] = None
+_config_mtime_key: Optional[tuple] = None
+_config_lock = _threading.RLock()
+
+
+def _config_stat_key() -> Optional[tuple]:
+    try:
+        st = _CONFIG_FILE.stat()
+        return (st.st_mtime, st.st_size)
+    except FileNotFoundError:
+        return None
 
 
 def load_config() -> UserConfig:
-    global _config_cache, _config_mtime
-    mtime = _CONFIG_FILE.stat().st_mtime if _CONFIG_FILE.exists() else 0.0
-    if _config_cache is None or mtime != _config_mtime:
-        raw = _read_raw_config()
-        _config_cache = _from_raw_config(raw)
-        _config_mtime = mtime
-    return _config_cache
+    global _config_cache, _config_mtime_key
+    with _config_lock:
+        key = _config_stat_key()
+        if _config_cache is None or key != _config_mtime_key:
+            raw = _read_raw_config()
+            _config_cache = _from_raw_config(raw)
+            _config_mtime_key = key
+        return _config_cache
 
 
 def save_config(cfg: UserConfig) -> None:
-    global _config_cache, _config_mtime
-    _write_raw_config(_to_raw_config(cfg))
-    _config_cache = cfg
-    _config_mtime = _CONFIG_FILE.stat().st_mtime if _CONFIG_FILE.exists() else None
+    global _config_cache, _config_mtime_key
+    with _config_lock:
+        _write_raw_config(_to_raw_config(cfg))
+        _config_cache = cfg
+        _config_mtime_key = _config_stat_key()
+    # Invalidate downstream caches that key off this config without holding our
+    # lock (avoid potential cross-module re-entry).
+    try:
+        from Grocery_Sense.services import preferences_service as _pref_mod
+        _pref_mod._invalidate_effective_cache()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -615,19 +645,52 @@ def get_store_priority() -> List[str]:
 # ---------------------------------------------------------------------------
 
 _CACHE_FILE = _CONFIG_DIR / "deals_cache.json"
+_deals_cache: Optional[Dict[str, Any]] = None
+_deals_cache_key: Optional[tuple] = None
+_deals_cache_lock = _threading.RLock()
+
+
+def _deals_stat_key() -> Optional[tuple]:
+    try:
+        st = _CACHE_FILE.stat()
+        return (st.st_mtime, st.st_size)
+    except FileNotFoundError:
+        return None
 
 
 def _load_cache() -> Dict[str, Any]:
-    if _CACHE_FILE.exists():
-        try:
-            return json.loads(_CACHE_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    return {}
+    global _deals_cache, _deals_cache_key
+    with _deals_cache_lock:
+        key = _deals_stat_key()
+        if _deals_cache is not None and key == _deals_cache_key:
+            return _deals_cache
+        if _CACHE_FILE.exists():
+            try:
+                _deals_cache = json.loads(_CACHE_FILE.read_text(encoding="utf-8")) or {}
+            except Exception:
+                _deals_cache = {}
+        else:
+            _deals_cache = {}
+        _deals_cache_key = key
+        return _deals_cache
 
 
 def _save_cache(data: Dict[str, Any]) -> None:
-    _CACHE_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    """Atomic write so a crash mid-flush doesn't truncate the cache."""
+    global _deals_cache, _deals_cache_key
+    import os as _os
+    tmp = _CACHE_FILE.with_suffix(_CACHE_FILE.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+        f.flush()
+        try:
+            _os.fsync(f.fileno())
+        except Exception:
+            pass
+    tmp.replace(_CACHE_FILE)
+    with _deals_cache_lock:
+        _deals_cache = data
+        _deals_cache_key = _deals_stat_key()
 
 
 def cache_get(key: str, *, max_age_days: int = 7) -> Optional[Any]:
@@ -642,7 +705,8 @@ def cache_get(key: str, *, max_age_days: int = 7) -> Optional[Any]:
         return None
     stored_at = entry.get("stored_at", 0)
     age_days = (time.time() - stored_at) / 86400.0
-    if age_days > max_age_days:
+    # Reject future-stamped entries (clock skew); rebuild from source.
+    if age_days < 0 or age_days > max_age_days:
         return None
     return entry.get("value")
 
