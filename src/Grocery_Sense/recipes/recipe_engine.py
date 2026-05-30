@@ -31,6 +31,7 @@ Later:
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
@@ -82,8 +83,15 @@ class RecipeEngine:
     def __init__(self, recipes_path: Optional[Path] = None) -> None:
         self._recipes_path: Path = Path(recipes_path) if recipes_path else _DEFAULT_RECIPES_PATH
         self._cache: Optional[List[Dict[str, Any]]] = None
+        self._cache_mtime: float = 0.0
 
     # ---- Loading --------------------------------------------------------
+
+    def _recipes_file_mtime(self) -> float:
+        try:
+            return self._recipes_path.stat().st_mtime
+        except Exception:
+            return 0.0
 
     def load_all_recipes(self, force_reload: bool = False) -> List[Dict[str, Any]]:
         """
@@ -92,12 +100,14 @@ class RecipeEngine:
         Returns a list of raw recipe dicts (not Recipe objects) for ease
         of JSON serialization and compatibility with existing code.
         """
-        if self._cache is not None and not force_reload:
+        mtime = self._recipes_file_mtime()
+        if self._cache is not None and not force_reload and mtime == self._cache_mtime:
             return list(self._cache)
 
         if not self._recipes_path.exists():
             # No recipes file yet; caller should handle empty list.
             self._cache = []
+            self._cache_mtime = 0.0
             return []
 
         with self._recipes_path.open("r", encoding="utf-8") as f:
@@ -117,6 +127,7 @@ class RecipeEngine:
                 f"or an object with a 'recipes' list; got {type(data).__name__}"
             )
 
+        self._cache_mtime = mtime
         return list(self._cache)
 
     # ---- Public filtering API ------------------------------------------
@@ -209,9 +220,10 @@ def _recipe_satisfies_profile(recipe: Recipe, profile: Dict[str, Any]) -> bool:
     avoid = _normalize_set(profile.get("avoid_ingredients", []))
     restrictions = _normalize_set(profile.get("restrictions", []))
 
-    # Allergies & avoid: if any term appears in the ingredients, reject
+    # Allergies & avoid: if any term appears as a whole word, reject.
+    # Whole-word so "nut" doesn't hit "coconut" / "butternut".
     for term in allergies | avoid:
-        if term and term in ingredients_text:
+        if term and re.search(rf"\b{re.escape(term)}\b", ingredients_text, flags=re.IGNORECASE):
             return False
 
     # Diet / restrictions: for now, we only soft-handle via tags in scoring.
@@ -224,9 +236,9 @@ def _recipe_satisfies_profile(recipe: Recipe, profile: Dict[str, Any]) -> bool:
 
     # You can also map special restrictions like "no_pork" to term checks here.
     for r in restrictions:
-        if r == "no_pork" and "pork" in ingredients_text:
+        if r == "no_pork" and re.search(r"\bpork\b", ingredients_text, flags=re.IGNORECASE):
             return False
-        if r == "no_beef" and "beef" in ingredients_text:
+        if r == "no_beef" and re.search(r"\bbeef\b", ingredients_text, flags=re.IGNORECASE):
             return False
 
     return True

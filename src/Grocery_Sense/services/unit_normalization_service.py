@@ -4,7 +4,17 @@ import re
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
-from Grocery_Sense.data.connection import get_connection
+from Grocery_Sense.data.connection import _TEST_DB_PATH, get_connection, get_db_path
+
+
+# Schema-ready cache keyed by resolved DB path, so swapping DBs (e.g. pytest
+# fixtures) automatically invalidates without each caller having to reset.
+_SCHEMA_READY: set = set()
+
+
+def _current_db_key() -> str:
+    from Grocery_Sense.data import connection as _conn
+    return _conn._TEST_DB_PATH or str(get_db_path())
 
 
 LB_TO_KG = 0.45359237
@@ -21,6 +31,27 @@ PINT_PER_L = 2.11337642
 
 # Weight oz
 G_PER_OZ = 28.3495231
+
+
+# Module-level conversion factor maps (hoisted out of _convert to avoid rebuilding
+# the dicts on every normalize() call).
+_WEIGHT_KG_PER_UNIT = {
+    "kg": 1.0,
+    "g": 0.001,
+    "lb": LB_TO_KG,
+    "oz": G_PER_OZ / 1000.0,
+}
+
+_VOLUME_L_PER_UNIT = {
+    "L": 1.0,
+    "ml": 1.0 / ML_PER_L,
+    "fl_oz": 1.0 / FL_OZ_PER_L,
+    "cup": 1.0 / CUP_PER_L,
+    "tbsp": 1.0 / TBSP_PER_L,
+    "tsp": 1.0 / TSP_PER_L,
+    "gal": 1.0 / GAL_PER_L,
+    "pint": 1.0 / PINT_PER_L,
+}
 
 
 @dataclass(frozen=True)
@@ -53,8 +84,12 @@ class UnitNormalizationService:
     # ----------------------------
 
     def ensure_schema(self) -> None:
+        key = _current_db_key()
+        if key in _SCHEMA_READY:
+            return
         self._ensure_items_default_unit_column()
         self._ensure_prices_norm_columns()
+        _SCHEMA_READY.add(key)
 
     def _column_exists(self, table: str, col: str) -> bool:
         with get_connection() as conn:
@@ -305,34 +340,12 @@ class UnitNormalizationService:
 
         p = float(unit_price)
 
-        # price_per_to = price_per_from * (base_per_to / base_per_from)
-        # e.g. $2/lb -> $/kg: $2 * (kg_per_kg / kg_per_lb) = $2 * (1.0 / 0.4536) = $4.41/kg
-        _weight_kg_per_unit: dict = {
-            "kg": 1.0,
-            "g": 0.001,
-            "lb": LB_TO_KG,
-            "oz": G_PER_OZ / 1000.0,
-        }
-
-        # ---- volume (base: L) ----
-        # 1 unit = ? litres
-        _volume_l_per_unit: dict = {
-            "L": 1.0,
-            "ml": 1.0 / ML_PER_L,
-            "fl_oz": 1.0 / FL_OZ_PER_L,
-            "cup": 1.0 / CUP_PER_L,
-            "tbsp": 1.0 / TBSP_PER_L,
-            "tsp": 1.0 / TSP_PER_L,
-            "gal": 1.0 / GAL_PER_L,
-            "pint": 1.0 / PINT_PER_L,
-        }
-
-        if from_unit in _weight_kg_per_unit and to_unit in _weight_kg_per_unit:
-            factor = _weight_kg_per_unit[to_unit] / _weight_kg_per_unit[from_unit]
+        if from_unit in _WEIGHT_KG_PER_UNIT and to_unit in _WEIGHT_KG_PER_UNIT:
+            factor = _WEIGHT_KG_PER_UNIT[to_unit] / _WEIGHT_KG_PER_UNIT[from_unit]
             return p * factor
 
-        if from_unit in _volume_l_per_unit and to_unit in _volume_l_per_unit:
-            factor = _volume_l_per_unit[to_unit] / _volume_l_per_unit[from_unit]
+        if from_unit in _VOLUME_L_PER_UNIT and to_unit in _VOLUME_L_PER_UNIT:
+            factor = _VOLUME_L_PER_UNIT[to_unit] / _VOLUME_L_PER_UNIT[from_unit]
             return p * factor
 
         # dozen <-> each

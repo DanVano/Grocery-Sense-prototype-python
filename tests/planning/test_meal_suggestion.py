@@ -145,17 +145,17 @@ class TestScoringAndOrdering:
         wn = next(s for s in suggestions if s.recipe["name"] == "Chicken Thighs with Rice")
         assert wn.preference_score > 0
 
-    def test_avoid_meats_zeroes_preference_score(self, svc, isolated_db):
+    def test_avoid_meats_pushes_preference_below_neutral(self, svc, isolated_db):
         """
-        avoid_meats subtracts 0.5 from preference_score. With a single avoid_meats
-        hit and no positive bonuses, the score clamps to zero — it must not go
-        negative or propagate into a negative total_score.
+        Per M-07 the preference score is re-centred around 0.5 (neutral) so that
+        avoid_meats hits land below neutral but a neutral recipe stays at 0.5.
+        Total score must remain non-negative.
         """
         profile = {"avoid_meats": ["pork"]}
         suggestions = svc.suggest_meals_for_week(profile=profile, max_recipes=20)
         if any(s.recipe["name"] == "Pork Chops with Apple" for s in suggestions):
             pork = next(s for s in suggestions if s.recipe["name"] == "Pork Chops with Apple")
-            assert pork.preference_score == 0.0
+            assert pork.preference_score < 0.5
             assert pork.total_score >= 0.0
 
 

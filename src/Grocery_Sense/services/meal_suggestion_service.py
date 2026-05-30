@@ -15,6 +15,7 @@ This is the "Choice C" brain:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -60,6 +61,13 @@ def _extract_core_ingredients(recipe: Dict[str, Any]) -> List[str]:
     return [str(i).strip() for i in ings if str(i).strip()]
 
 
+def _word_in_text(term: str, text: str) -> bool:
+    """Whole-word match so 'nut' doesn't hit 'coconut' / 'butternut'."""
+    if not term:
+        return False
+    return re.search(rf"\b{re.escape(term)}\b", text, flags=re.IGNORECASE) is not None
+
+
 def _recipe_has_disallowed_ingredients(recipe: Dict[str, Any], profile: Dict[str, Any]) -> bool:
     """
     Hard filter using allergies / avoid_ingredients / restrictions.
@@ -72,13 +80,13 @@ def _recipe_has_disallowed_ingredients(recipe: Dict[str, Any], profile: Dict[str
     restrictions = set(_lower_list(profile.get("restrictions", [])))
 
     for term in allergies | avoid:
-        if term and term in ingredients_text:
+        if _word_in_text(term, ingredients_text):
             return True
 
     # Map some restrictions to ingredient bans
-    if "no_pork" in restrictions and "pork" in ingredients_text:
+    if "no_pork" in restrictions and _word_in_text("pork", ingredients_text):
         return True
-    if "no_beef" in restrictions and "beef" in ingredients_text:
+    if "no_beef" in restrictions and _word_in_text("beef", ingredients_text):
         return True
 
     return False
@@ -112,7 +120,9 @@ def _compute_preference_score(recipe: Dict[str, Any], profile: Dict[str, Any]) -
         if tag and tag in tags:
             score += 0.2
 
-    # clamp
+    # Re-centre so neutral = 0.5; avoid-only recipes land below neutral,
+    # rather than collapsing to the same 0.0 as a totally neutral recipe.
+    score = 0.5 + (score * 0.5)
     if score < 0.0:
         score = 0.0
     if score > 1.0:
@@ -256,7 +266,11 @@ def _fetch_deals_for_ingredients(
     the live API, but that is deferred until the Flipp client is wired up.
     """
     import datetime as _dt
+    from collections import defaultdict
     from Grocery_Sense.data.connection import get_connection
+
+    if not ingredients:
+        return {}
 
     today = _dt.date.today().isoformat()
 
@@ -276,14 +290,16 @@ def _fetch_deals_for_ingredients(
                 WHERE b.status = 'active'
                   AND b.valid_from <= ?
                   AND b.valid_to   >= ?
+                LIMIT 5000
                 """,
                 (today, today),
             ).fetchall()
     except Exception:
         rows = []
 
-    # Build a flat list of (searchable_text, Deal) pairs once
-    local_deals: List[tuple] = []
+    # Token-index the deals once: O(D + sum(tokens-per-ingredient)) instead of
+    # O(ingredients × deals) substring scan.
+    index: Dict[str, List[Deal]] = defaultdict(list)
     for r in rows:
         title = str(r["title"] or r["description"] or "").lower().strip()
         if not title:
@@ -292,19 +308,24 @@ def _fetch_deals_for_ingredients(
         price = float(price_val) if price_val is not None else None
         unit = str(r["unit"] or "each").strip()
         store = str(r["store_name"] or "")
-        local_deals.append((
-            title,
-            Deal(name=title, store=store, price=price, unit=unit, raw={}),
-        ))
+        deal = Deal(name=title, store=store, price=price, unit=unit, raw={})
+        for tok in title.split():
+            index[tok].append(deal)
 
-    # Match each ingredient against deal titles in one pass per ingredient
     out: Dict[str, List[Deal]] = {}
     for ing in ingredients:
         ing_low = ing.lower().strip()
         if not ing_low:
             continue
-        matched = [deal for text, deal in local_deals if ing_low in text or text in ing_low]
-        out[ing_low] = matched
+        seen_ids: set = set()
+        hits: List[Deal] = []
+        for tok in ing_low.split():
+            for d in index.get(tok, ()):
+                if id(d) in seen_ids:
+                    continue
+                seen_ids.add(id(d))
+                hits.append(d)
+        out[ing_low] = hits
 
     return out
 

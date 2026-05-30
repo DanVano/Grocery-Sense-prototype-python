@@ -13,6 +13,9 @@ from Grocery_Sense.services.multibuy_deal_service import MultiBuyDealService
 from Grocery_Sense.services.unit_normalization_service import UnitNormalizationService
 
 
+_MAX_DEALRECORDS_BYTES = 25 * 1024 * 1024
+
+
 _PRICE_ANY = re.compile(r"(\$?\s*\d+(?:\.\d{2})?)")
 
 # Strict money: either a $-prefixed amount, or the string IS a decimal number
@@ -139,7 +142,7 @@ class FlyerIngestService:
                 continue
 
             asset_type = _guess_asset_type(p)
-            sha = compute_sha256(p)
+            sha = compute_sha256(p.read_bytes())
             asset_id = self.repo.add_asset(
                 flyer_id=flyer_id,
                 asset_type=asset_type,
@@ -268,6 +271,10 @@ class FlyerIngestService:
         p = Path(dealrecords_path)
         if not p.exists():
             raise FileNotFoundError(str(p))
+        if p.stat().st_size > _MAX_DEALRECORDS_BYTES:
+            raise ValueError(
+                f"DealRecords JSON exceeds size cap of {_MAX_DEALRECORDS_BYTES} bytes"
+            )
 
         data = json.loads(p.read_text(encoding="utf-8"))
         if not isinstance(data, list):

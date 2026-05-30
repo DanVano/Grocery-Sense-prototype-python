@@ -241,6 +241,7 @@ class PlanningService:
             item_id=item_id,
             since_days=days_back,
             store_id=store_id,
+            limit=int(history_limit) if history_limit else None,
         )
         prices = [p.unit_price for p in pts if p.unit_price is not None]
         if not prices:
@@ -425,6 +426,7 @@ class PlanningService:
                 item_id=item_row.id,
                 store_id=store.id,
                 since_days=days_back,
+                limit=int(history_limit) if history_limit else None,
             )
             prices = [p.unit_price for p in pts if p.unit_price is not None]
             if not prices:

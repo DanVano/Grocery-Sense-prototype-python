@@ -204,9 +204,10 @@ class BasketOptimizerService:
 
             name = str(getattr(it, "display_name", "") or "").strip() or f"Item {item_id}"
             unit = str(getattr(it, "unit", "") or "").strip().lower() or "each"
+            raw_qty = getattr(it, "quantity", None)
             try:
-                qty = float(getattr(it, "quantity", 1.0) or 1.0)
-            except Exception:
+                qty = float(raw_qty) if raw_qty is not None else 1.0
+            except (TypeError, ValueError):
                 qty = 1.0
             if qty <= 0:
                 qty = 1.0
@@ -369,10 +370,12 @@ class BasketOptimizerService:
                 # star only if any SECONDARY member is involved
                 if preferences_service is not None:
                     try:
-                        # we consider "star excluders" the SECONDARY excluders
-                        # so if any members exist and not just master => star
-                        master_name = getattr(config_store.get_master_member(), "name", "Master")  # type: ignore
-                        if any(m != master_name for m in mems):
+                        # Compare by id (not name) — two members can share a name.
+                        members_list = config_store.list_members()  # type: ignore[attr-defined]
+                        name_to_id = {getattr(mm, "name", ""): getattr(mm, "id", 0) for mm in members_list}
+                        master_id = getattr(config_store.get_master_member(), "id", 0)  # type: ignore[attr-defined]
+                        mem_ids = {int(name_to_id.get(m, -1)) for m in mems}
+                        if any(mid != int(master_id) for mid in mem_ids if mid >= 0):
                             starred = True
                     except Exception:
                         starred = True
@@ -596,6 +599,8 @@ class BasketOptimizerService:
                 b = candidates[j]
                 total = 0.0
                 unknown = 0
+                items_at_a = 0
+                items_at_b = 0
 
                 for it in items:
                     pa = price_matrix.get((a, it.item_id))
@@ -608,10 +613,21 @@ class BasketOptimizerService:
                         continue
                     if ua is None:
                         total += ub * it.quantity  # type: ignore
+                        items_at_b += 1
                     elif ub is None:
                         total += ua * it.quantity
+                        items_at_a += 1
                     else:
                         total += min(ua, ub) * it.quantity
+                        if ua <= ub:
+                            items_at_a += 1
+                        else:
+                            items_at_b += 1
+
+                # Reject degenerate pairs where one stop covers zero items
+                # (otherwise the optimizer recommends an empty second trip).
+                if items_at_a == 0 or items_at_b == 0:
+                    continue
 
                 # Two-store travel penalty + weaker favourite tie-breaker
                 score = total + (unknown * 5.0) + 6.0
@@ -648,7 +664,6 @@ class BasketOptimizerService:
           prices.flyer_source_id -> flyer_sources(id)
           flyer_sources.valid_from/valid_to must include today
         """
-        # If the schema/table isn't present yet, fail-safe.
         try:
             from Grocery_Sense.data.connection import get_connection
         except Exception:
@@ -657,36 +672,30 @@ class BasketOptimizerService:
         if not item_ids or not store_ids:
             return {}
 
-        today = _today_date().isoformat()
-
-        # Build query with IN clauses (safe enough for local sqlite usage)
-        item_ids_csv = ",".join(str(int(x)) for x in sorted(set(item_ids)) if int(x) > 0)
-        store_ids_csv = ",".join(str(int(x)) for x in sorted(set(store_ids)) if int(x) > 0)
-        if not item_ids_csv or not store_ids_csv:
+        items = sorted({int(x) for x in item_ids if int(x) > 0})
+        stores = sorted({int(x) for x in store_ids if int(x) > 0})
+        if not items or not stores:
             return {}
 
-        sql = f"""
-            SELECT
-                p.store_id AS store_id,
-                p.item_id AS item_id,
-                p.unit_price AS unit_price,
-                COALESCE(p.unit, 'each') AS unit,
-                fs.valid_from AS valid_from,
-                fs.valid_to AS valid_to
-            FROM prices p
-            JOIN flyer_sources fs ON fs.id = p.flyer_source_id
-            WHERE
-                p.source = 'flyer'
-                AND p.store_id IN ({store_ids_csv})
-                AND p.item_id IN ({item_ids_csv})
-        """
+        today = _today_date().isoformat()
+        store_ph = ",".join("?" * len(stores))
+        item_ph = ",".join("?" * len(items))
+        sql = (
+            "SELECT p.store_id, p.item_id, p.unit_price, COALESCE(p.unit, 'each') AS unit "
+            "FROM prices p "
+            "JOIN flyer_sources fs ON fs.id = p.flyer_source_id "
+            "WHERE p.source = 'flyer' "
+            f"  AND p.store_id IN ({store_ph}) "
+            f"  AND p.item_id  IN ({item_ph}) "
+            "  AND p.unit_price IS NOT NULL "
+            "  AND date(fs.valid_from) <= date(?) "
+            "  AND date(fs.valid_to)   >= date(?)"
+        )
 
         out: Dict[Tuple[int, int], Tuple[float, str]] = {}
         try:
             with get_connection() as conn:
-                conn.row_factory = getattr(conn, "row_factory", None)  # keep as-is
-                cur = conn.execute(sql)
-                rows = cur.fetchall()
+                rows = conn.execute(sql, (*stores, *items, today, today)).fetchall()
         except Exception:
             return {}
 
@@ -696,20 +705,10 @@ class BasketOptimizerService:
                 iid = int(r["item_id"])
                 up = float(r["unit_price"])
                 unit = str(r["unit"] or "each").strip().lower()
-                vf = _parse_date(r["valid_from"])
-                vt = _parse_date(r["valid_to"])
-                if vf and vt:
-                    td = _today_date()
-                    if not (vf <= td <= vt):
-                        continue
-                else:
-                    # If valid_from/to not set, treat as not active
-                    continue
-
-                key = (sid, iid)
-                if key not in out or up < out[key][0]:
-                    out[key] = (up, unit)
             except Exception:
                 continue
+            key = (sid, iid)
+            if key not in out or up < out[key][0]:
+                out[key] = (up, unit)
 
         return out

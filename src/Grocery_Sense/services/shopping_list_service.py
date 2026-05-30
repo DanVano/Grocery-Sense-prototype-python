@@ -36,8 +36,7 @@ class ShoppingListService:
             )
             if planned_store_id is not None:
                 shopping_list_repo.set_planned_store_id(row_id, planned_store_id)
-            rows = shopping_list_repo.list_active_items()
-            match = next((r for r in rows if r.id == row_id), None)
+            match = shopping_list_repo.get_item(row_id)
             if match:
                 created.append(match)
         return created
@@ -91,10 +90,7 @@ class ShoppingListService:
 
     def clear_all_checked_off(self) -> None:
         """Mark all checked-off active items as deleted."""
-        items = shopping_list_repo.list_all_items()
-        for it in items:
-            if it.is_checked_off and it.is_active:
-                shopping_list_repo.delete_item(it.id)
+        shopping_list_repo.clear_checked_off_items()
 
 
 def get_active_items(*, store_id: Optional[int] = None, include_checked_off: bool = False):
@@ -138,9 +134,7 @@ def clear_all_items() -> None:
 
 def clear_all_checked_off() -> None:
     """Soft-delete only the checked-off active items."""
-    for it in shopping_list_repo.list_all_items():
-        if it.is_checked_off and it.is_active:
-            shopping_list_repo.delete_item(it.id)
+    shopping_list_repo.clear_checked_off_items()
 
 
 # ---------------------------------------------------------------------------

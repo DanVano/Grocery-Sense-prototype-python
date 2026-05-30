@@ -282,14 +282,14 @@ def search_deals(
     raw_json = _http_get_json(FLYER_SEARCH_URL, params=params)
     deals = _normalize_flier_items(raw_json)
 
-    # store a JSON-serializable version in cache
+    # Strip the raw Flipp payload before caching to disk; downstream rehydration
+    # tolerates a missing 'raw' key via `d.get("raw") or {}`.
     serializable = [
         {
             "name": d.name,
             "store": d.store,
             "price": d.price,
             "unit": d.unit,
-            "raw": d.raw,
         }
         for d in deals
     ]

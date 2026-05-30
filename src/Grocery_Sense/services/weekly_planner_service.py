@@ -14,7 +14,7 @@ WeeklyPlannerService:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from Grocery_Sense.services.meal_suggestion_service import (
     MealSuggestionService,
@@ -163,30 +163,33 @@ class WeeklyPlannerService:
         planned_store_id: Optional[int],
         added_by: Optional[str],
     ) -> None:
+        from Grocery_Sense.data.repositories import shopping_list_repo
+
+        rows: List[Tuple] = []
+        store_id_param = int(planned_store_id) if planned_store_id is not None else None
         for ing in plan.planned_ingredients:
             notes_parts: List[str] = []
             if ing.recipe_names:
                 notes_parts.append("Used in: " + ", ".join(ing.recipe_names))
-
-            # include mapping summary in notes (nice for demo/debug)
             if ing.item_id is not None and ing.match_confidence is not None:
                 label = ing.canonical_name or f"item_id={ing.item_id}"
                 notes_parts.append(f"Mapped: {label} ({ing.match_confidence:.2f}, {ing.match_method})")
 
-            notes = " | ".join(notes_parts) if notes_parts else None
+            notes = " | ".join(notes_parts) if notes_parts else ""
             quantity = max(1.0, float(ing.approximate_count))
+            rows.append((
+                (ing.name or "").strip(),
+                quantity,
+                "each",
+                "",
+                notes,
+                (added_by or "").strip() or None,
+                None,
+                store_id_param,
+                int(ing.item_id) if ing.item_id is not None else None,
+            ))
 
-            # ✅ pass item_id and disable auto_map to avoid extra fuzzy calls
-            self.shopping_list_service.add_single_item(
-                name=ing.name,
-                quantity=quantity,
-                unit="each",
-                planned_store_id=planned_store_id,
-                notes=notes,
-                added_by=added_by,
-                item_id=ing.item_id,
-                auto_map=False,
-            )
+        shopping_list_repo.bulk_add_items(rows)
 
 
 def summarize_weekly_plan(plan: WeeklyPlan) -> list[str]:

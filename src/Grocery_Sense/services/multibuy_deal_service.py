@@ -46,7 +46,12 @@ class MultiBuyDealService:
         discount: Optional[float],
     ) -> DealAdjusted:
         desc = (description or "").strip()
-        q = float(quantity) if quantity and quantity > 0 else 1.0
+        try:
+            q = float(quantity) if quantity is not None else 1.0
+            if q <= 0:
+                q = 1.0
+        except (TypeError, ValueError):
+            q = 1.0
         up = float(unit_price) if unit_price is not None else None
         lt = float(line_total) if line_total is not None else None
         disc = float(discount) if discount is not None else 0.0
@@ -74,12 +79,12 @@ class MultiBuyDealService:
                 # If quantity looks wrong and line_total matches bundle_total, fix q
                 if (q < bundle_qty) and self._close(lt, bundle_total):
                     q2 = float(bundle_qty)
-                    net_total = lt - (disc or 0.0)
+                    net_total = max(0.0, lt - (disc or 0.0))
                     eff = net_total / q2 if q2 > 0 else None
                     return DealAdjusted(quantity=q2, unit_price=eff, line_total=net_total, deal_note=f"bundle({bundle_qty}/${bundle_total})_qty_fix")
 
                 # If qty is multiple of bundle qty and totals align, still compute effective from totals
-                net_total = lt - (disc or 0.0)
+                net_total = max(0.0, lt - (disc or 0.0))
                 if q > 0:
                     eff = net_total / q
                     return DealAdjusted(quantity=q, unit_price=eff, line_total=net_total, deal_note=f"bundle({bundle_qty}/${bundle_total})_from_total")
@@ -113,14 +118,19 @@ class MultiBuyDealService:
                     if self._close(lt, float(at_qty) * float(each_price)):
                         q2 = float(at_qty)
 
-            # If line_total missing, compute it
+            # If line_total missing, compute it (synthesised lt already nets disc)
             lt2 = lt
             if lt2 is None and up2 is not None:
                 lt2 = (up2 * q2) - (disc or 0.0)
 
-            # If line_total present, compute effective using net total / qty
+            # If line_total present, compute effective using net total / qty.
+            # When the receipt supplied `lt`, treat it as gross and net the
+            # discount exactly once; the synthesised lt2 already did.
             if lt2 is not None and q2 > 0:
-                net_total = lt2 - (disc or 0.0) if lt is not None else lt2
+                if lt is not None:
+                    net_total = max(0.0, lt - (disc or 0.0))
+                else:
+                    net_total = lt2
                 eff = net_total / q2
                 return DealAdjusted(quantity=q2, unit_price=eff, line_total=net_total, deal_note=f"at({at_qty}@{each_price})")
 
@@ -172,6 +182,8 @@ class MultiBuyDealService:
     # Utils
     # -----------------------------
 
-    def _close(self, a: float, b: float, tol: float = 0.02) -> bool:
-        # currency tolerance
-        return abs(float(a) - float(b)) <= tol
+    def _close(self, a: float, b: float, tol: float = 0.02, rel: float = 0.005) -> bool:
+        # Absolute floor + relative tolerance so the 2¢ window doesn't vanish on
+        # items priced in hundreds.
+        diff = abs(float(a) - float(b))
+        return diff <= max(tol, rel * max(abs(float(a)), abs(float(b))))

@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import datetime
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from Grocery_Sense.data.repositories.flyers_repo import FlyersRepo
 from Grocery_Sense.data.repositories.stores_repo import list_stores
@@ -51,10 +52,14 @@ def _read_last_sync_utc() -> Optional[datetime.datetime]:
 
 def _write_last_sync_utc(dt: datetime.datetime) -> None:
     _META_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _META_FILE.write_text(
+    # Atomic write so a crash mid-flush doesn't leave an empty meta file
+    # (which would make `needs_sync()` fire every launch).
+    tmp = _META_FILE.with_suffix(_META_FILE.suffix + ".tmp")
+    tmp.write_text(
         json.dumps({"last_sync_utc": dt.isoformat(timespec="seconds")}),
         encoding="utf-8",
     )
+    tmp.replace(_META_FILE)
 
 
 def needs_sync() -> bool:
@@ -63,6 +68,9 @@ def needs_sync() -> bool:
     if last is None:
         return True
     elapsed = datetime.datetime.now(datetime.timezone.utc) - last
+    # Clock skew: if last_sync is in the future, treat as overdue.
+    if elapsed.total_seconds() < 0:
+        return True
     return elapsed.total_seconds() >= SYNC_INTERVAL_DAYS * 86400
 
 
@@ -142,12 +150,17 @@ def run_sync(*, force: bool = False) -> FlyerSyncResult:
             continue
 
         try:
-            # Derive validity window from the full batch so a batch that spans
-            # multiple flyer weeks isn't truncated to the first deal's window.
-            vf_candidates = [d.get("valid_from") for d in raw_deals if d.get("valid_from")]
-            vt_candidates = [d.get("valid_to") for d in raw_deals if d.get("valid_to")]
-            valid_from = min(vf_candidates) if vf_candidates else default_valid_from
-            valid_to = max(vt_candidates) if vt_candidates else default_valid_to
+            # Per-element default for missing valid_from/valid_to so a partial
+            # batch (some deals lack dates) still computes a window that covers
+            # the dated deals. ISO regex filter rejects garbage like "2026/13/01".
+            _iso_re = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+            def _iso_or(default: str, v: Any) -> str:
+                s = str(v or "").strip()
+                return s if _iso_re.match(s) else default
+            vf_values = [_iso_or(default_valid_from, d.get("valid_from")) for d in raw_deals]
+            vt_values = [_iso_or(default_valid_to,   d.get("valid_to"))   for d in raw_deals]
+            valid_from = min(vf_values) if vf_values else default_valid_from
+            valid_to   = max(vt_values) if vt_values else default_valid_to
 
             flyer_id = repo.create_flyer_batch(
                 store_id=store_id,
