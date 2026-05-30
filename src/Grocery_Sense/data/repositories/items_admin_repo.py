@@ -14,6 +14,18 @@ def _now_utc_iso() -> str:
 
 VALID_UNITS = ("each", "lb", "kg", "g")
 
+# Tables this admin repo is allowed to inspect via PRAGMA. PRAGMA cannot accept
+# `?` placeholders, so all dynamic table names go through this whitelist.
+_ALLOWED_PRAGMA_TABLES = frozenset({
+    "items", "item_aliases", "prices", "receipt_line_items",
+    "shopping_list", "flyer_deals",
+})
+
+# Tables that carry an item_id column referencing items.id. Used by merge_items
+# instead of walking sqlite_master (per CLAUDE.md: no generic helpers for
+# one-off operations; new tables must be added here explicitly).
+_ITEM_ID_TABLES = ("prices", "receipt_line_items", "shopping_list", "flyer_deals", "item_aliases")
+
 
 @dataclass(frozen=True)
 class ItemRow:
@@ -45,6 +57,8 @@ class ItemsAdminRepo:
         self._ensure_items_columns()
 
     def _col_exists(self, table: str, col: str) -> bool:
+        if table not in _ALLOWED_PRAGMA_TABLES:
+            raise ValueError(f"Disallowed table for PRAGMA: {table}")
         with get_connection() as conn:
             rows = conn.execute(f"PRAGMA table_info({table});").fetchall()
         return any(r[1] == col for r in rows)
@@ -84,9 +98,14 @@ class ItemsAdminRepo:
                 COALESCE(i.canonical_name, '') AS canonical_name,
                 COALESCE(i.is_tracked, 0) AS is_tracked,
                 i.default_unit,
-                (SELECT COUNT(1) FROM prices p WHERE p.item_id = i.id) AS price_points,
-                (SELECT MAX(p.date) FROM prices p WHERE p.item_id = i.id) AS last_price_date
+                COALESCE(ps.price_points, 0) AS price_points,
+                ps.last_price_date
             FROM items i
+            LEFT JOIN (
+                SELECT item_id, COUNT(1) AS price_points, MAX(date) AS last_price_date
+                FROM prices
+                GROUP BY item_id
+            ) ps ON ps.item_id = i.id
             {where}
             ORDER BY COALESCE(i.is_tracked, 0) DESC, i.canonical_name ASC
             LIMIT ?;
@@ -216,33 +235,41 @@ class ItemsAdminRepo:
                 if (not target_unit) and source_unit in VALID_UNITS:
                     conn.execute("UPDATE items SET default_unit=? WHERE id=?;", (source_unit, int(target_item_id)))
 
-                # Move references across ALL tables that have an item_id column
-                tables = conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';"
-                ).fetchall()
-                table_names = [r[0] for r in tables]
+                # Move references across the known item_id-bearing tables. New
+                # such tables must be added to _ITEM_ID_TABLES explicitly.
+                existing_tables = {
+                    r[0] for r in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';"
+                    ).fetchall()
+                }
 
-                for table in table_names:
-                    cols = conn.execute(f"PRAGMA table_info({table});").fetchall()
-                    col_names = {c[1] for c in cols}
-                    if "item_id" not in col_names:
+                for table in _ITEM_ID_TABLES:
+                    if table not in existing_tables:
                         continue
 
-                    # Try update, fallback to delete source rows if constraints conflict
+                    # Wrap per-table UPDATE in a SAVEPOINT so a unique-constraint
+                    # collision only rolls back this table's change, leaving the
+                    # outer transaction intact.
+                    conn.execute("SAVEPOINT merge_table;")
                     try:
                         conn.execute(
                             f"UPDATE {table} SET item_id=? WHERE item_id=?;",
                             (int(target_item_id), int(source_item_id)),
                         )
+                        conn.execute("RELEASE merge_table;")
                     except sqlite3.IntegrityError:
-                        # If unique constraints collide, keep target rows and drop source rows
-                        conn.execute(f"DELETE FROM {table} WHERE item_id=?;", (int(source_item_id),))
+                        conn.execute("ROLLBACK TO merge_table;")
+                        conn.execute("RELEASE merge_table;")
+                        conn.execute(
+                            f"DELETE FROM {table} WHERE item_id=?;",
+                            (int(source_item_id),),
+                        )
 
                 # Keep source name as alias (optional, if item_aliases exists)
                 if keep_source_as_alias:
-                    source_name = (s[1] or "").strip()
+                    source_name = (s[1] or "").strip().lower()
                     if source_name:
-                        if "item_aliases" in table_names:
+                        if "item_aliases" in existing_tables:
                             # best-effort schema: alias_text, item_id, confidence, source, created_at
                             cols = conn.execute("PRAGMA table_info(item_aliases);").fetchall()
                             alias_cols = {c[1] for c in cols}

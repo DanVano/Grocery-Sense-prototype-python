@@ -2,10 +2,24 @@ from __future__ import annotations
 
 from contextlib import closing
 from datetime import datetime, timedelta
-from typing import List, Optional, Tuple, Dict, Any
+from typing import Iterable, List, Optional, Tuple, Dict, Any
 
 from Grocery_Sense.data.connection import get_connection
 from Grocery_Sense.domain.models import PricePoint, PriceStats
+
+
+# SQLite default SQLITE_MAX_VARIABLE_NUMBER is 999 on older builds, 32766 on
+# 3.32+. Chunk to 900 so we stay well under the floor regardless of build.
+_SQL_PARAM_CHUNK = 900
+
+
+def _coerce_id_list(ids: Iterable[int]) -> List[int]:
+    return [int(x) for x in ids if int(x) > 0]
+
+
+def _chunks(seq: List[int], size: int = _SQL_PARAM_CHUNK):
+    for i in range(0, len(seq), size):
+        yield seq[i:i + size]
 
 
 def add_price_point(
@@ -62,25 +76,33 @@ def get_prices_for_item(
     item_id: int,
     store_id: Optional[int] = None,
     since_days: int = 365,
+    *,
+    limit: Optional[int] = None,
 ) -> List[PricePoint]:
     """
     Returns price points for an item, optionally filtered by store.
-    """
-    cutoff = (datetime.now() - timedelta(days=since_days)).strftime("%Y-%m-%d")
 
+    When `limit` is provided the query fetches the most-recent N rows
+    (DESC + LIMIT) and reverses them so the caller still sees ASC order
+    — preserving the no-limit contract.
+    """
     sql = """
         SELECT id, item_id, store_id, receipt_id, flyer_source_id, source, date,
                unit_price, unit, quantity, total_price, raw_name, confidence
         FROM prices
-        WHERE item_id = ? AND date >= ?
+        WHERE item_id = ? AND date(date) >= date('now', ?)
     """
-    params: List[Any] = [item_id, cutoff]
+    params: List[Any] = [item_id, f"-{int(since_days)} days"]
 
     if store_id is not None:
         sql += " AND store_id = ?"
         params.append(store_id)
 
-    sql += " ORDER BY date ASC"
+    if limit is None:
+        sql += " ORDER BY date ASC"
+    else:
+        sql += " ORDER BY date DESC LIMIT ?"
+        params.append(int(limit))
 
     out: List[PricePoint] = []
     with closing(get_connection()) as conn:
@@ -104,6 +126,9 @@ def get_prices_for_item(
                     confidence=r[12],
                 )
             )
+    if limit is not None:
+        # We fetched DESC to honour LIMIT; flip back to ASC for caller contract.
+        out.reverse()
     return out
 
 
@@ -148,24 +173,54 @@ def get_most_recent_price(item_id: int, store_id: Optional[int] = None) -> Optio
 
 def get_price_stats_for_item(item_id: int, store_id: Optional[int] = None, since_days: int = 365) -> PriceStats:
     """
-    Returns basic stats for an item's price history.
+    Returns basic stats for an item's price history. Computed via SQL aggregate.
     """
-    points = get_prices_for_item(item_id, store_id=store_id, since_days=since_days)
-    if not points:
-        return PriceStats(item_id=item_id, store_id=store_id, min_price=None, max_price=None, avg_price=None, count=0)
+    sql = (
+        "SELECT MIN(unit_price), MAX(unit_price), AVG(unit_price), COUNT(*) "
+        "FROM prices "
+        "WHERE item_id = ? AND date(date) >= date('now', ?) AND unit_price IS NOT NULL"
+    )
+    params: List[Any] = [int(item_id), f"-{int(since_days)} days"]
+    if store_id is not None:
+        sql += " AND store_id = ?"
+        params.append(int(store_id))
 
-    prices = [p.unit_price for p in points if p.unit_price is not None]
-    if not prices:
+    with closing(get_connection()) as conn:
+        row = conn.execute(sql, params).fetchone()
+
+    if not row or not row[3]:
         return PriceStats(item_id=item_id, store_id=store_id, min_price=None, max_price=None, avg_price=None, count=0)
 
     return PriceStats(
         item_id=item_id,
         store_id=store_id,
-        min_price=min(prices),
-        max_price=max(prices),
-        avg_price=sum(prices) / len(prices),
-        count=len(prices),
+        min_price=float(row[0]),
+        max_price=float(row[1]),
+        avg_price=float(row[2]),
+        count=int(row[3]),
     )
+
+
+def add_price_points(rows: List[Tuple]) -> None:
+    """Bulk insert price points via executemany.
+
+    Each tuple matches: (item_id, store_id, receipt_id, flyer_source_id, source, date,
+    unit_price, unit, quantity, total_price, raw_name, confidence).
+    """
+    if not rows:
+        return
+    with closing(get_connection()) as conn:
+        conn.executemany(
+            """
+            INSERT INTO prices (
+                item_id, store_id, receipt_id, flyer_source_id, source, date,
+                unit_price, unit, quantity, total_price, raw_name, confidence
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        conn.commit()
 
 
 # ---------- Advanced query helpers (Milestone 2: usual price + 6-mo low + staples) ----------
@@ -347,43 +402,41 @@ def get_usual_unit_price_batch(
     full item set. Python then applies the same median + fallback logic as the
     single-item version, with zero extra DB round-trips.
     """
-    if not item_ids:
+    ids = _coerce_id_list(item_ids)
+    if not ids:
         return {}
 
-    id_csv = ",".join(str(int(x)) for x in item_ids)
     since = _since_clause(since_days)
 
-    sql = f"""
-        SELECT
-            item_id,
-            unit_price,
-            CASE WHEN (source = 'receipt' OR receipt_id IS NOT NULL) THEN 1 ELSE 0 END AS is_receipt
-        FROM prices
-        WHERE item_id IN ({id_csv})
-          AND unit_price IS NOT NULL
-          AND unit_price > 0
-          AND date(COALESCE(date, created_at)) >= date('now', ?)
-        ORDER BY item_id
-    """
-
-    receipt_rows: Dict[int, List[float]] = {iid: [] for iid in item_ids}
-    all_rows: Dict[int, List[float]] = {iid: [] for iid in item_ids}
+    receipt_rows: Dict[int, List[float]] = {iid: [] for iid in ids}
+    all_rows: Dict[int, List[float]] = {iid: [] for iid in ids}
 
     with closing(get_connection()) as conn:
-        for row in conn.execute(sql, (since,)).fetchall():
-            try:
-                iid = int(row[0])
-                price = float(row[1])
-                is_receipt = int(row[2])
-            except Exception:
-                continue
-            if iid in all_rows:
-                all_rows[iid].append(price)
-                if is_receipt:
-                    receipt_rows[iid].append(price)
+        for chunk in _chunks(ids):
+            placeholders = ",".join("?" * len(chunk))
+            sql = (
+                "SELECT item_id, unit_price, "
+                "CASE WHEN (source = 'receipt' OR receipt_id IS NOT NULL) THEN 1 ELSE 0 END AS is_receipt "
+                "FROM prices "
+                f"WHERE item_id IN ({placeholders}) "
+                "  AND unit_price IS NOT NULL AND unit_price > 0 "
+                "  AND date(COALESCE(date, created_at)) >= date('now', ?) "
+                "ORDER BY item_id"
+            )
+            for row in conn.execute(sql, (*chunk, since)).fetchall():
+                try:
+                    iid = int(row[0])
+                    price = float(row[1])
+                    is_receipt = int(row[2])
+                except Exception:
+                    continue
+                if iid in all_rows:
+                    all_rows[iid].append(price)
+                    if is_receipt:
+                        receipt_rows[iid].append(price)
 
     out: Dict[int, Tuple[Optional[float], int, str]] = {}
-    for iid in item_ids:
+    for iid in ids:
         r_prices = receipt_rows[iid]
         a_prices = all_rows[iid]
 
@@ -408,44 +461,38 @@ def get_six_month_low_batch(
     Returns {item_id: (lowest_unit_price, when_iso)}.
     Uses a window function to find the minimum price row per item in one query.
     """
-    if not item_ids:
+    ids = _coerce_id_list(item_ids)
+    if not ids:
         return {}
 
-    id_csv = ",".join(str(int(x)) for x in item_ids)
     since = _since_clause(since_days)
-
-    sql = f"""
-        SELECT item_id, unit_price, when_iso
-        FROM (
-            SELECT
-                item_id,
-                unit_price,
-                COALESCE(date, created_at) AS when_iso,
-                ROW_NUMBER() OVER (
-                    PARTITION BY item_id
-                    ORDER BY unit_price ASC, COALESCE(date, created_at) ASC
-                ) AS rn
-            FROM prices
-            WHERE item_id IN ({id_csv})
-              AND unit_price IS NOT NULL
-              AND unit_price > 0
-              AND date(COALESCE(date, created_at)) >= date('now', ?)
-        )
-        WHERE rn = 1
-    """
-
-    out: Dict[int, Tuple[Optional[float], Optional[str]]] = {iid: (None, None) for iid in item_ids}
+    out: Dict[int, Tuple[Optional[float], Optional[str]]] = {iid: (None, None) for iid in ids}
 
     with closing(get_connection()) as conn:
-        for row in conn.execute(sql, (since,)).fetchall():
-            try:
-                iid = int(row[0])
-                price = float(row[1])
-                when = str(row[2]) if row[2] else None
-            except Exception:
-                continue
-            if iid in out:
-                out[iid] = (price, when)
+        for chunk in _chunks(ids):
+            placeholders = ",".join("?" * len(chunk))
+            sql = (
+                "SELECT item_id, unit_price, when_iso FROM ( "
+                "  SELECT item_id, unit_price, COALESCE(date, created_at) AS when_iso, "
+                "         ROW_NUMBER() OVER ("
+                "             PARTITION BY item_id "
+                "             ORDER BY unit_price ASC, COALESCE(date, created_at) ASC"
+                "         ) AS rn "
+                "  FROM prices "
+                f"  WHERE item_id IN ({placeholders}) "
+                "    AND unit_price IS NOT NULL AND unit_price > 0 "
+                "    AND date(COALESCE(date, created_at)) >= date('now', ?) "
+                ") WHERE rn = 1"
+            )
+            for row in conn.execute(sql, (*chunk, since)).fetchall():
+                try:
+                    iid = int(row[0])
+                    price = float(row[1])
+                    when = str(row[2]) if row[2] else None
+                except Exception:
+                    continue
+                if iid in out:
+                    out[iid] = (price, when)
 
     return out
 
@@ -466,41 +513,38 @@ def get_last_seen_at_or_below_batch(
     Fetches all candidate rows in one query, then filters by per-item ceiling
     in Python to avoid a variable-per-row WHERE clause.
     """
-    if not item_id_to_ceiling:
+    ids = _coerce_id_list(item_id_to_ceiling.keys())
+    if not ids:
         return {}
 
-    id_csv = ",".join(str(int(x)) for x in item_id_to_ceiling)
     since = _since_clause(since_days)
-
-    sql = f"""
-        SELECT item_id, unit_price, COALESCE(date, created_at) AS when_iso
-        FROM prices
-        WHERE item_id IN ({id_csv})
-          AND unit_price IS NOT NULL
-          AND unit_price > 0
-          AND date(COALESCE(date, created_at)) >= date('now', ?)
-        ORDER BY item_id, when_iso DESC
-    """
-
-    # For each item, we want the most recent date where price <= ceiling.
-    # Rows are already ordered DESC by date, so the first qualifying row per item wins.
-    out: Dict[int, Optional[str]] = {iid: None for iid in item_id_to_ceiling}
+    out: Dict[int, Optional[str]] = {iid: None for iid in ids}
     seen: set = set()
 
     with closing(get_connection()) as conn:
-        for row in conn.execute(sql, (since,)).fetchall():
-            try:
-                iid = int(row[0])
-                price = float(row[1])
-                when = str(row[2]) if row[2] else None
-            except Exception:
-                continue
-            if iid in seen:
-                continue
-            ceiling = item_id_to_ceiling.get(iid)
-            if ceiling is not None and price <= float(ceiling):
-                out[iid] = when
-                seen.add(iid)
+        for chunk in _chunks(ids):
+            placeholders = ",".join("?" * len(chunk))
+            sql = (
+                "SELECT item_id, unit_price, COALESCE(date, created_at) AS when_iso "
+                "FROM prices "
+                f"WHERE item_id IN ({placeholders}) "
+                "  AND unit_price IS NOT NULL AND unit_price > 0 "
+                "  AND date(COALESCE(date, created_at)) >= date('now', ?) "
+                "ORDER BY item_id, when_iso DESC"
+            )
+            for row in conn.execute(sql, (*chunk, since)).fetchall():
+                try:
+                    iid = int(row[0])
+                    price = float(row[1])
+                    when = str(row[2]) if row[2] else None
+                except Exception:
+                    continue
+                if iid in seen:
+                    continue
+                ceiling = item_id_to_ceiling.get(iid)
+                if ceiling is not None and price <= float(ceiling):
+                    out[iid] = when
+                    seen.add(iid)
 
     return out
 
@@ -648,32 +692,32 @@ def get_most_recent_prices_by_store_batch(
     Replaces N×M calls to get_most_recent_price(item_id, store_id=store_id).
     Returns {(item_id, store_id): PricePoint}.
     """
-    if not item_ids or not store_ids:
+    items = _coerce_id_list(item_ids)
+    stores = _coerce_id_list(store_ids)
+    if not items or not stores:
         return {}
 
-    item_csv = ",".join(str(int(x)) for x in item_ids)
-    store_csv = ",".join(str(int(x)) for x in store_ids)
-
-    sql = f"""
-        SELECT {_price_cols()}
-        FROM (
-            SELECT {_price_cols()},
-                   ROW_NUMBER() OVER (
-                       PARTITION BY item_id, store_id
-                       ORDER BY date DESC, id DESC
-                   ) AS rn
-            FROM prices
-            WHERE item_id  IN ({item_csv})
-              AND store_id IN ({store_csv})
-              AND unit_price IS NOT NULL
-        ) WHERE rn = 1
-    """
-
+    store_ph = ",".join("?" * len(stores))
     out: Dict[Tuple[int, int], PricePoint] = {}
     with closing(get_connection()) as conn:
-        for r in conn.execute(sql).fetchall():
-            pp = _row_to_price_point(r)
-            out[(pp.item_id, pp.store_id)] = pp
+        for chunk in _chunks(items):
+            item_ph = ",".join("?" * len(chunk))
+            sql = (
+                f"SELECT {_price_cols()} FROM ( "
+                f"  SELECT {_price_cols()}, "
+                "         ROW_NUMBER() OVER ("
+                "             PARTITION BY item_id, store_id "
+                "             ORDER BY date DESC, id DESC"
+                "         ) AS rn "
+                "  FROM prices "
+                f"  WHERE item_id  IN ({item_ph}) "
+                f"    AND store_id IN ({store_ph}) "
+                "    AND unit_price IS NOT NULL "
+                ") WHERE rn = 1"
+            )
+            for r in conn.execute(sql, (*chunk, *stores)).fetchall():
+                pp = _row_to_price_point(r)
+                out[(pp.item_id, pp.store_id)] = pp
     return out
 
 
@@ -685,30 +729,29 @@ def get_most_recent_prices_global_batch(
     Replaces N calls to get_most_recent_price(item_id, store_id=None).
     Returns {item_id: PricePoint}.
     """
-    if not item_ids:
+    items = _coerce_id_list(item_ids)
+    if not items:
         return {}
-
-    item_csv = ",".join(str(int(x)) for x in item_ids)
-
-    sql = f"""
-        SELECT {_price_cols()}
-        FROM (
-            SELECT {_price_cols()},
-                   ROW_NUMBER() OVER (
-                       PARTITION BY item_id
-                       ORDER BY date DESC, id DESC
-                   ) AS rn
-            FROM prices
-            WHERE item_id IN ({item_csv})
-              AND unit_price IS NOT NULL
-        ) WHERE rn = 1
-    """
 
     out: Dict[int, PricePoint] = {}
     with closing(get_connection()) as conn:
-        for r in conn.execute(sql).fetchall():
-            pp = _row_to_price_point(r)
-            out[pp.item_id] = pp
+        for chunk in _chunks(items):
+            placeholders = ",".join("?" * len(chunk))
+            sql = (
+                f"SELECT {_price_cols()} FROM ( "
+                f"  SELECT {_price_cols()}, "
+                "         ROW_NUMBER() OVER ("
+                "             PARTITION BY item_id "
+                "             ORDER BY date DESC, id DESC"
+                "         ) AS rn "
+                "  FROM prices "
+                f"  WHERE item_id IN ({placeholders}) "
+                "    AND unit_price IS NOT NULL "
+                ") WHERE rn = 1"
+            )
+            for r in conn.execute(sql, chunk).fetchall():
+                pp = _row_to_price_point(r)
+                out[pp.item_id] = pp
     return out
 
 
@@ -721,33 +764,34 @@ def get_active_flyer_prices_batch(
     Replaces N×M calls to get_active_flyer_unit_price(item_id, store_id).
     Returns {(item_id, store_id): {"unit_price": float, "source": "flyer"}}.
     """
-    if not item_ids or not store_ids:
+    items = _coerce_id_list(item_ids)
+    stores = _coerce_id_list(store_ids)
+    if not items or not stores:
         return {}
 
-    item_csv = ",".join(str(int(x)) for x in item_ids)
-    store_csv = ",".join(str(int(x)) for x in store_ids)
-
-    sql = f"""
-        SELECT p.item_id, p.store_id, MIN(p.unit_price) AS unit_price
-        FROM prices p
-        JOIN flyer_sources fs ON fs.id = p.flyer_source_id
-        WHERE p.source      = 'flyer'
-          AND p.item_id  IN ({item_csv})
-          AND p.store_id IN ({store_csv})
-          AND p.unit_price IS NOT NULL
-          AND date(fs.valid_from) <= date('now')
-          AND date(fs.valid_to)   >= date('now')
-        GROUP BY p.item_id, p.store_id
-    """
-
+    store_ph = ",".join("?" * len(stores))
     out: Dict[Tuple[int, int], Dict[str, Any]] = {}
     try:
         with closing(get_connection()) as conn:
-            for r in conn.execute(sql).fetchall():
-                item_id = int(r[0])
-                store_id = int(r[1])
-                unit_price = float(r[2])
-                out[(item_id, store_id)] = {"unit_price": unit_price, "source": "flyer"}
+            for chunk in _chunks(items):
+                item_ph = ",".join("?" * len(chunk))
+                sql = (
+                    "SELECT p.item_id, p.store_id, MIN(p.unit_price) AS unit_price "
+                    "FROM prices p "
+                    "JOIN flyer_sources fs ON fs.id = p.flyer_source_id "
+                    "WHERE p.source = 'flyer' "
+                    f"  AND p.item_id  IN ({item_ph}) "
+                    f"  AND p.store_id IN ({store_ph}) "
+                    "  AND p.unit_price IS NOT NULL "
+                    "  AND date(fs.valid_from) <= date('now') "
+                    "  AND date(fs.valid_to)   >= date('now') "
+                    "GROUP BY p.item_id, p.store_id"
+                )
+                for r in conn.execute(sql, (*chunk, *stores)).fetchall():
+                    item_id = int(r[0])
+                    store_id = int(r[1])
+                    unit_price = float(r[2])
+                    out[(item_id, store_id)] = {"unit_price": unit_price, "source": "flyer"}
     except Exception:
         pass
     return out
@@ -762,35 +806,31 @@ def get_price_stats_batch(
     Replaces N calls to get_price_stats_for_item(item_id, since_days=...).
     Returns {item_id: PriceStats}. Items with no history are omitted.
     """
-    if not item_ids:
+    items = _coerce_id_list(item_ids)
+    if not items:
         return {}
 
-    item_csv = ",".join(str(int(x)) for x in item_ids)
-
-    sql = f"""
-        SELECT
-            item_id,
-            MIN(unit_price) AS min_price,
-            MAX(unit_price) AS max_price,
-            AVG(unit_price) AS avg_price,
-            COUNT(*)        AS cnt
-        FROM prices
-        WHERE item_id IN ({item_csv})
-          AND unit_price IS NOT NULL
-          AND date(COALESCE(date, created_at)) >= date('now', ?)
-        GROUP BY item_id
-    """
-
+    since = _since_clause(since_days)
     out: Dict[int, PriceStats] = {}
     with closing(get_connection()) as conn:
-        for r in conn.execute(sql, (_since_clause(since_days),)).fetchall():
-            item_id = int(r[0])
-            out[item_id] = PriceStats(
-                item_id=item_id,
-                store_id=None,
-                min_price=float(r[1]),
-                max_price=float(r[2]),
-                avg_price=float(r[3]),
-                count=int(r[4]),
+        for chunk in _chunks(items):
+            placeholders = ",".join("?" * len(chunk))
+            sql = (
+                "SELECT item_id, MIN(unit_price), MAX(unit_price), AVG(unit_price), COUNT(*) "
+                "FROM prices "
+                f"WHERE item_id IN ({placeholders}) "
+                "  AND unit_price IS NOT NULL "
+                "  AND date(COALESCE(date, created_at)) >= date('now', ?) "
+                "GROUP BY item_id"
             )
+            for r in conn.execute(sql, (*chunk, since)).fetchall():
+                item_id = int(r[0])
+                out[item_id] = PriceStats(
+                    item_id=item_id,
+                    store_id=None,
+                    min_price=float(r[1]),
+                    max_price=float(r[2]),
+                    avg_price=float(r[3]),
+                    count=int(r[4]),
+                )
     return out

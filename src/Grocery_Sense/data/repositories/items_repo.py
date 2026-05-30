@@ -106,43 +106,42 @@ def create_item(
         raise ValueError("canonical_name cannot be empty")
 
     with get_connection() as conn, closing(conn.cursor()) as cur:
-        try:
-            cur.execute(
-                """
-                INSERT INTO items (
-                    canonical_name,
-                    category,
-                    default_unit,
-                    typical_package_size,
-                    typical_package_unit,
-                    is_tracked,
-                    notes
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    name_clean,
-                    category,
-                    default_unit,
-                    typical_package_size,
-                    typical_package_unit,
-                    1 if is_tracked else 0,
-                    notes,
-                ),
+        cur.execute(
+            """
+            INSERT OR IGNORE INTO items (
+                canonical_name,
+                category,
+                default_unit,
+                typical_package_size,
+                typical_package_unit,
+                is_tracked,
+                notes
             )
-            item_id = int(cur.lastrowid)
-            conn.commit()
-        except Exception:
-            # Most likely UNIQUE constraint; return existing if present.
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                name_clean,
+                category,
+                default_unit,
+                typical_package_size,
+                typical_package_unit,
+                1 if is_tracked else 0,
+                notes,
+            ),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            # Existing row — return it directly (don't take cur.lastrowid, which
+            # may be a stale rowid from a prior INSERT on this connection).
             existing = get_item_by_name(name_clean)
             if existing:
                 return existing
-            raise
+            raise RuntimeError("create_item: row exists but get_item_by_name returned None")
+        item_id = int(cur.lastrowid)
 
     # Re-fetch (ensures we return normalized values from DB)
     created = get_item_by_id(item_id)
     if not created:
-        # Extremely unlikely, but keep errors clear
         raise RuntimeError("create_item succeeded but could not re-fetch item")
     return created
 
@@ -305,23 +304,28 @@ def get_items_by_ids(item_ids: List[int]) -> Dict[int, Item]:
     Replaces N calls to get_item_by_id(item_id) in loops.
     Missing ids are silently omitted from the result.
     """
-    if not item_ids:
+    ids = [int(x) for x in item_ids if int(x) > 0]
+    if not ids:
         return {}
-
-    id_csv = ",".join(str(int(x)) for x in item_ids)
-    sql = f"""
-        SELECT id, canonical_name, category, default_unit,
-               typical_package_size, typical_package_unit, is_tracked, notes, created_at
-        FROM items
-        WHERE id IN ({id_csv})
-    """
 
     out: Dict[int, Item] = {}
     with closing(get_connection()) as conn:
-        for row in conn.execute(sql).fetchall():
-            item = _row_to_item(row)
-            out[item.id] = item
+        for chunk in _chunked(ids, 900):
+            placeholders = ",".join("?" * len(chunk))
+            sql = (
+                "SELECT id, canonical_name, category, default_unit, "
+                "typical_package_size, typical_package_unit, is_tracked, notes, created_at "
+                f"FROM items WHERE id IN ({placeholders})"
+            )
+            for row in conn.execute(sql, chunk).fetchall():
+                item = _row_to_item(row)
+                out[item.id] = item
     return out
+
+
+def _chunked(seq: List[int], size: int):
+    for i in range(0, len(seq), size):
+        yield seq[i:i + size]
 
 
 def update_item_notes(item_id: int, notes: Optional[str]) -> None:

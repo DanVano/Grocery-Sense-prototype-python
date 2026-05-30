@@ -46,50 +46,24 @@ def list_active_items(
     If store_id is provided, filters by planned_store_id == store_id.
     If include_checked_off is False (default), only returns unchecked items.
     """
-    checked_filter = "" if include_checked_off else "AND is_checked_off = 0"
+    cols = (
+        "SELECT id, display_name, quantity, unit, category, is_checked_off, notes, "
+        "added_by_member_id, is_active, planned_store_id, item_id FROM shopping_list "
+        "WHERE is_active = 1 AND is_deleted = 0"
+    )
     with get_connection() as conn:
         if store_id is None:
-            rows = conn.execute(
-                f"""
-                SELECT
-                    id,
-                    display_name,
-                    quantity,
-                    unit,
-                    category,
-                    is_checked_off,
-                    notes,
-                    added_by_member_id,
-                    is_active,
-                    planned_store_id,
-                    item_id
-                FROM shopping_list
-                WHERE is_active = 1 AND is_deleted = 0 {checked_filter}
-                ORDER BY id DESC
-                """
-            ).fetchall()
+            if include_checked_off:
+                sql = cols + " ORDER BY id DESC"
+            else:
+                sql = cols + " AND is_checked_off = 0 ORDER BY id DESC"
+            rows = conn.execute(sql).fetchall()
         else:
-            rows = conn.execute(
-                f"""
-                SELECT
-                    id,
-                    display_name,
-                    quantity,
-                    unit,
-                    category,
-                    is_checked_off,
-                    notes,
-                    added_by_member_id,
-                    is_active,
-                    planned_store_id,
-                    item_id
-                FROM shopping_list
-                WHERE is_active = 1 AND is_deleted = 0 {checked_filter}
-                  AND planned_store_id = ?
-                ORDER BY id DESC
-                """,
-                (int(store_id),),
-            ).fetchall()
+            if include_checked_off:
+                sql = cols + " AND planned_store_id = ? ORDER BY id DESC"
+            else:
+                sql = cols + " AND is_checked_off = 0 AND planned_store_id = ? ORDER BY id DESC"
+            rows = conn.execute(sql, (int(store_id),)).fetchall()
 
     return [_row_to_obj(r) for r in rows]
 
@@ -116,6 +90,43 @@ def list_all_items() -> List[ShoppingListRow]:
             """
         ).fetchall()
     return [_row_to_obj(r) for r in rows]
+
+
+def get_item(row_id: int) -> Optional[ShoppingListRow]:
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT id, display_name, quantity, unit, category,
+                   is_checked_off, notes, added_by_member_id, is_active,
+                   planned_store_id, item_id
+            FROM shopping_list WHERE id = ?
+            """,
+            (int(row_id),),
+        ).fetchone()
+    return _row_to_obj(row) if row else None
+
+
+def bulk_add_items(rows: List[Tuple]) -> int:
+    """Insert many shopping_list rows in one transaction.
+
+    Each tuple matches: (display_name, quantity, unit, category, notes,
+    added_by, added_by_member_id, planned_store_id, item_id).
+    """
+    if not rows:
+        return 0
+    with get_connection() as conn:
+        cur = conn.executemany(
+            """
+            INSERT INTO shopping_list
+                (display_name, quantity, unit, category, notes, added_by,
+                 added_by_member_id, planned_store_id, item_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        conn.commit()
+        n = int(cur.rowcount or 0)
+        return n if n >= 0 else len(rows)
 
 
 def add_item(
@@ -192,12 +203,12 @@ def clear_planned_store_ids_for_active_items(*, include_checked_off: bool = Fals
     Clears planned_store_id for active items (optionally including checked-off ones).
     Returns the number of rows affected (best-effort; sqlite may return -1 in some cases).
     """
-    where = "is_active = 1 AND is_deleted = 0"
-    if not include_checked_off:
-        where += " AND is_checked_off = 0"
-
+    if include_checked_off:
+        sql = "UPDATE shopping_list SET planned_store_id = NULL WHERE is_active = 1 AND is_deleted = 0"
+    else:
+        sql = "UPDATE shopping_list SET planned_store_id = NULL WHERE is_active = 1 AND is_deleted = 0 AND is_checked_off = 0"
     with get_connection() as conn:
-        cur = conn.execute(f"UPDATE shopping_list SET planned_store_id = NULL WHERE {where}")
+        cur = conn.execute(sql)
         conn.commit()
         return int(cur.rowcount or 0)
 
@@ -257,15 +268,16 @@ def bulk_set_planned_store_ids_by_item_id(
         for (item_id, store_id) in assignments
     ]
 
-    active_clause = " AND is_active = 1 AND is_deleted = 0" if active_only else ""
-    sql = f"UPDATE shopping_list SET planned_store_id = ? WHERE item_id = ?{active_clause}"
+    if active_only:
+        sql = "UPDATE shopping_list SET planned_store_id = ? WHERE item_id = ? AND is_active = 1 AND is_deleted = 0"
+    else:
+        sql = "UPDATE shopping_list SET planned_store_id = ? WHERE item_id = ?"
 
-    updated = 0
     with get_connection() as conn:
-        for item_id, store_id in rows:
-            cur = conn.execute(sql, (store_id, item_id))
-            if cur.rowcount and cur.rowcount > 0:
-                updated += cur.rowcount
+        cur = conn.executemany(sql, [(store_id, item_id) for item_id, store_id in rows])
         conn.commit()
+        updated = int(cur.rowcount or 0)
+        if updated < 0:
+            updated = 0
 
     return updated

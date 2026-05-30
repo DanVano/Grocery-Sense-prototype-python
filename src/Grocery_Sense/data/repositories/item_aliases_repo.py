@@ -1,10 +1,24 @@
 from __future__ import annotations
 
+import sqlite3
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Optional, List
+from typing import Iterator, Optional, List
 from datetime import datetime, timezone
 
 from Grocery_Sense.data.connection import get_connection
+
+
+@contextmanager
+def _conn_ctx(conn: Optional[sqlite3.Connection]) -> Iterator[sqlite3.Connection]:
+    """If `conn` is provided, yield it without committing/closing (caller owns
+    the transaction). Otherwise open one, commit on exit, close on exit."""
+    if conn is not None:
+        yield conn
+        return
+    with get_connection() as c:
+        yield c
+        c.commit()
 
 
 
@@ -24,10 +38,15 @@ class ItemAliasesRepo:
     def __init__(self, db_path: Optional[str] = None) -> None:
         self.db_path = db_path
 
-    def get_by_alias(self, alias_text: str) -> Optional[ItemAlias]:
+    def get_by_alias(
+        self,
+        alias_text: str,
+        *,
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> Optional[ItemAlias]:
         alias_text = alias_text.strip().lower()
-        with get_connection() as conn:
-            row = conn.execute(
+        with _conn_ctx(conn) as c:
+            row = c.execute(
                 """
                 SELECT id, alias_text, item_id, confidence, source, created_at, last_seen_at, times_seen
                 FROM item_aliases
@@ -46,11 +65,13 @@ class ItemAliasesRepo:
         item_id: int,
         confidence: float = 1.0,
         source: str = "manual",
+        *,
+        conn: Optional[sqlite3.Connection] = None,
     ) -> None:
         alias_text = alias_text.strip().lower()
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        with get_connection() as conn:
-            conn.execute(
+        with _conn_ctx(conn) as c:
+            c.execute(
                 """
                 INSERT INTO item_aliases (alias_text, item_id, confidence, source, created_at, last_seen_at, times_seen)
                 VALUES (?, ?, ?, ?, ?, ?, 1)
@@ -63,13 +84,17 @@ class ItemAliasesRepo:
                 """,
                 (alias_text, item_id, confidence, source, now, now),
             )
-            conn.commit()
 
-    def mark_seen(self, alias_text: str) -> None:
+    def mark_seen(
+        self,
+        alias_text: str,
+        *,
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> None:
         alias_text = alias_text.strip().lower()
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        with get_connection() as conn:
-            conn.execute(
+        with _conn_ctx(conn) as c:
+            c.execute(
                 """
                 UPDATE item_aliases
                 SET last_seen_at = ?, times_seen = times_seen + 1
@@ -77,7 +102,6 @@ class ItemAliasesRepo:
                 """,
                 (now, alias_text),
             )
-            conn.commit()
 
     def list_all(self) -> List[ItemAlias]:
         with get_connection() as conn:

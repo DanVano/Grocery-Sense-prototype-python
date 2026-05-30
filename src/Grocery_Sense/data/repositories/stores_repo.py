@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import List, Optional, Iterable
 from contextlib import closing
-from datetime import datetime
+from datetime import datetime, timezone
 
 from Grocery_Sense.data.connection import get_connection
 from Grocery_Sense.domain.models import Store
@@ -87,7 +87,7 @@ def create_store(
                 1 if is_favorite else 0,
                 priority,
                 notes,
-                datetime.utcnow().isoformat(timespec="seconds"),
+                datetime.now(timezone.utc).isoformat(timespec="seconds"),
             ),
         )
         store_id = cur.lastrowid
@@ -130,12 +130,14 @@ def get_store_by_id(store_id: int) -> Optional[Store]:
 def list_stores(
     only_favorites: bool = False,
     order_by_priority: bool = True,
+    limit: Optional[int] = None,
 ) -> List[Store]:
     """
     Return all stores, optionally only favorites, ordered by priority then name.
     """
     where_clause = "WHERE is_favorite = 1" if only_favorites else ""
     order_clause = "ORDER BY priority DESC, name ASC" if order_by_priority else "ORDER BY name ASC"
+    limit_clause = " LIMIT ?" if limit is not None else ""
 
     query = f"""
         SELECT
@@ -143,11 +145,14 @@ def list_stores(
             flipp_store_id, is_favorite, priority, notes, created_at
         FROM stores
         {where_clause}
-        {order_clause}
+        {order_clause}{limit_clause}
     """
 
     with get_connection() as conn, closing(conn.cursor()) as cur:
-        cur.execute(query)
+        if limit is None:
+            cur.execute(query)
+        else:
+            cur.execute(query, (int(limit),))
         rows = cur.fetchall()
 
     return [_row_to_store(r) for r in rows]
@@ -280,7 +285,7 @@ def upsert_store_from_flipp(
                 city,
                 postal_code,
                 flipp_store_id,
-                datetime.utcnow().isoformat(timespec="seconds"),
+                datetime.now(timezone.utc).isoformat(timespec="seconds"),
             ),
         )
         new_id = cur.lastrowid

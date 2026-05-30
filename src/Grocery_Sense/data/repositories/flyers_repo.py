@@ -5,7 +5,7 @@ import hashlib
 import re
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from Grocery_Sense.data.connection import get_connection
@@ -18,6 +18,32 @@ def compute_sha256(data: bytes) -> str:
     h = hashlib.sha256()
     h.update(data)
     return h.hexdigest()
+
+
+_PRICE_RX = re.compile(r"-?\d+(?:\.\d+)?")
+
+
+def _parse_price_str(s: str) -> Optional[float]:
+    """Best-effort price parse for strings like "$3.99", "1.99/lb", "1,29".
+
+    Returns None on garbage. Lives in the repo (not pulled from a service) so
+    we don't invert the layering rule from CLAUDE.md.
+    """
+    if not isinstance(s, str):
+        return None
+    text = s.strip()
+    if not text:
+        return None
+    # European decimal: "1.234,56" or "1234,56" → swap comma to dot.
+    if re.match(r"^-?\d{1,3}(\.\d{3})+,\d{1,2}$", text) or re.match(r"^-?\d+,\d{1,2}$", text):
+        text = text.replace(".", "").replace(",", ".")
+    m = _PRICE_RX.search(text)
+    if not m:
+        return None
+    try:
+        return float(m.group(0))
+    except ValueError:
+        return None
 
 
 def _norm(s: Any) -> str:
@@ -153,6 +179,8 @@ class FlyersRepo:
     # -------------------------------------------------------------------------
 
     def ensure_schema(self) -> None:
+        if getattr(self, "_schema_ready", False):
+            return
         with get_connection() as conn:
             conn.execute(
                 """
@@ -215,7 +243,7 @@ class FlyersRepo:
                     norm_unit_price REAL,
                     norm_unit TEXT,
                     norm_note TEXT,
-                    item_id TEXT,
+                    item_id INTEGER,
                     mapping_confidence REAL,
                     confidence REAL,
                     created_at TEXT NOT NULL,
@@ -225,13 +253,71 @@ class FlyersRepo:
                 """
             )
 
+            self._migrate_flyer_deals_item_id_to_integer(conn)
+
             conn.execute("CREATE INDEX IF NOT EXISTS idx_flyer_deals_flyer_id ON flyer_deals(flyer_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_flyer_deals_store_id ON flyer_deals(store_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_flyer_deals_item_id ON flyer_deals(item_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_flyer_batches_store_id ON flyer_batches(store_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_flyer_batches_status ON flyer_batches(status)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_flyer_batches_valid ON flyer_batches(valid_from, valid_to)")
 
             conn.commit()
+        self._schema_ready = True
+
+    @staticmethod
+    def _migrate_flyer_deals_item_id_to_integer(conn: sqlite3.Connection) -> None:
+        """Rebuild flyer_deals with item_id INTEGER if a legacy TEXT column is detected."""
+        rows = conn.execute("PRAGMA table_info(flyer_deals)").fetchall()
+        item_id_type = next((str(r[2]).upper() for r in rows if r[1] == "item_id"), None)
+        if item_id_type is None or item_id_type == "INTEGER":
+            return
+
+        conn.execute("PRAGMA foreign_keys = OFF;")
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE flyer_deals__new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    flyer_id INTEGER NOT NULL,
+                    asset_id INTEGER,
+                    store_id INTEGER NOT NULL,
+                    page_index INTEGER,
+                    title TEXT,
+                    description TEXT,
+                    price_text TEXT,
+                    deal_qty REAL,
+                    deal_total REAL,
+                    unit_price REAL,
+                    unit TEXT,
+                    norm_unit_price REAL,
+                    norm_unit TEXT,
+                    norm_note TEXT,
+                    item_id INTEGER,
+                    mapping_confidence REAL,
+                    confidence REAL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(flyer_id) REFERENCES flyer_batches(id) ON DELETE CASCADE,
+                    FOREIGN KEY(asset_id) REFERENCES flyer_assets(id) ON DELETE SET NULL
+                );
+                INSERT INTO flyer_deals__new
+                    (id, flyer_id, asset_id, store_id, page_index, title, description, price_text,
+                     deal_qty, deal_total, unit_price, unit, norm_unit_price, norm_unit, norm_note,
+                     item_id, mapping_confidence, confidence, created_at)
+                SELECT
+                    id, flyer_id, asset_id, store_id, page_index, title, description, price_text,
+                    deal_qty, deal_total, unit_price, unit, norm_unit_price, norm_unit, norm_note,
+                    CASE WHEN item_id IS NULL OR item_id = '' THEN NULL
+                         ELSE CAST(item_id AS INTEGER) END,
+                    mapping_confidence, confidence, created_at
+                FROM flyer_deals;
+                DROP TABLE flyer_deals;
+                ALTER TABLE flyer_deals__new RENAME TO flyer_deals;
+                """
+            )
+            conn.commit()
+        finally:
+            conn.execute("PRAGMA foreign_keys = ON;")
 
     # -------------------------------------------------------------------------
     # Stores (optional convenience; stores_repo may also manage this table)
@@ -243,21 +329,21 @@ class FlyersRepo:
         if not name:
             raise ValueError("Store name is required")
 
-        now = datetime.utcnow().isoformat(timespec="seconds")
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
         with get_connection() as conn:
-            conn.execute(
-                """
-                INSERT INTO stores (name, created_at)
-                VALUES (?, ?)
-                ON CONFLICT(name) DO UPDATE SET name=excluded.name
-                """,
-                (name, now),
-            )
+            # stores.name has no UNIQUE constraint, so ON CONFLICT(name) would
+            # raise — use SELECT-then-INSERT instead (single-user assumption).
             row = conn.execute("SELECT id FROM stores WHERE name = ?", (name,)).fetchone()
+            if row is None:
+                conn.execute(
+                    "INSERT INTO stores (name, created_at) VALUES (?, ?)",
+                    (name, now),
+                )
+                row = conn.execute("SELECT id FROM stores WHERE name = ?", (name,)).fetchone()
+            conn.commit()
             if not row:
                 raise RuntimeError("Failed to upsert store")
-            conn.commit()
             return int(row[0] if isinstance(row, tuple) else row["id"])
 
     def list_stores(self) -> List[StoreRow]:
@@ -291,7 +377,7 @@ class FlyersRepo:
         status: str = "active",
     ) -> int:
         self.ensure_schema()
-        now = datetime.utcnow().isoformat(timespec="seconds")
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
         with get_connection() as conn:
             conn.execute(
@@ -342,7 +428,7 @@ class FlyersRepo:
         sha256: Optional[str] = None,
     ) -> int:
         self.ensure_schema()
-        now = datetime.utcnow().isoformat(timespec="seconds")
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         with get_connection() as conn:
             conn.execute(
                 """
@@ -363,7 +449,7 @@ class FlyersRepo:
         sha256: Optional[str] = None,
     ) -> int:
         self.ensure_schema()
-        now = datetime.utcnow().isoformat(timespec="seconds")
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
         with get_connection() as conn:
             conn.execute(
                 """
@@ -397,12 +483,12 @@ class FlyersRepo:
         norm_unit_price: Optional[float] = None,
         norm_unit: Optional[str] = None,
         norm_note: Optional[str] = None,
-        item_id: Optional[str] = None,
+        item_id: Optional[int] = None,
         mapping_confidence: Optional[float] = None,
         confidence: Optional[float] = None,
     ) -> int:
         self.ensure_schema()
-        now = datetime.utcnow().isoformat(timespec="seconds")
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
         with get_connection() as conn:
             conn.execute(
@@ -430,7 +516,7 @@ class FlyersRepo:
                     norm_unit_price,
                     norm_unit,
                     norm_note,
-                    item_id,
+                    int(item_id) if item_id is not None else None,
                     mapping_confidence,
                     confidence,
                     now,
@@ -455,6 +541,12 @@ class FlyersRepo:
             price = d.get("deal_total", None)
             if price is None:
                 price = d.get("price", None)
+            if isinstance(price, (int, float)):
+                deal_total: Optional[float] = float(price)
+            elif isinstance(price, str) and price.strip():
+                deal_total = _parse_price_str(price)
+            else:
+                deal_total = None
             self.add_deal(
                 flyer_id=batch_id,
                 store_id=store_id,
@@ -462,7 +554,7 @@ class FlyersRepo:
                 title=d.get("title", None),
                 description=d.get("description", None),
                 price_text=d.get("price_text", None),
-                deal_total=price if isinstance(price, (int, float)) else None,
+                deal_total=deal_total,
                 unit_price=d.get("unit_price", None),
                 unit=d.get("unit", None),
             )
@@ -563,7 +655,7 @@ class FlyersRepo:
         - optionally filter disallowed oils (baseline oils_allowed)
         - annotate soft-excluded deals with pref_* fields (hit + who)
         """
-        day = (on_date or as_of or datetime.now().date().isoformat()).strip()
+        day = (on_date or as_of or datetime.now(timezone.utc).date().isoformat()).strip()
         if apply_preferences is None:
             apply_preferences = bool(preferences_aware)
         if include_disallowed_oils is not None:
