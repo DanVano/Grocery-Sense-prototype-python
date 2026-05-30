@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import queue
+import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-from typing import Callable, Optional, List
+from typing import Any, Callable, Optional, List
 
 from Grocery_Sense.data.repositories.flyers_repo import FlyersRepo
 from Grocery_Sense.services.flyer_ingest_service import FlyerIngestService
@@ -34,6 +36,8 @@ class FlyerImportWindow(tk.Toplevel):
         self.try_mapping_var = tk.BooleanVar(value=True)
 
         self.files: List[str] = []
+        self._import_queue: "queue.Queue[Any]" = queue.Queue()
+        self._import_btn: Optional[ttk.Button] = None
 
         self._build_ui()
         self._load_stores()
@@ -82,9 +86,8 @@ class FlyerImportWindow(tk.Toplevel):
         self.progress = ttk.Progressbar(pad, mode="indeterminate")
         self.progress.grid(row=8, column=1, sticky="we", padx=(6, 0), pady=(14, 0))
 
-        ttk.Button(pad, text="Import Flyers", command=self._run_import, width=18).grid(
-            row=9, column=1, sticky="w", padx=(6, 0), pady=(10, 0)
-        )
+        self._import_btn = ttk.Button(pad, text="Import Flyers", command=self._run_import, width=18)
+        self._import_btn.grid(row=9, column=1, sticky="w", padx=(6, 0), pady=(10, 0))
 
         self.status_var = tk.StringVar(value="Ready.")
         ttk.Label(pad, textvariable=self.status_var).grid(row=10, column=0, columnspan=3, sticky="w", pady=(12, 0))
@@ -156,30 +159,51 @@ class FlyerImportWindow(tk.Toplevel):
 
         self.progress.start(10)
         self.status_var.set("Importing... (Azure + extraction)")
-        self.update_idletasks()
+        if self._import_btn is not None:
+            self._import_btn.config(state="disabled")
 
+        files_snapshot = list(self.files)
+        try_mapping = bool(self.try_mapping_var.get())
+
+        def _worker():
+            try:
+                res = self.svc.ingest_assets(
+                    store_id=store_id,
+                    valid_from=valid_from,
+                    valid_to=valid_to,
+                    file_paths=files_snapshot,
+                    raw_json_dir=raw_json_dir,
+                    source_type="manual_upload",
+                    source_ref=None,
+                    note=None,
+                    try_item_mapping=try_mapping,
+                )
+                self._import_queue.put(("ok", res))
+            except Exception as e:
+                self._import_queue.put(("err", str(e)))
+
+        threading.Thread(target=_worker, daemon=True).start()
+        self.after(150, self._poll_import_queue)
+
+    def _poll_import_queue(self) -> None:
         try:
-            res = self.svc.ingest_assets(
-                store_id=store_id,
-                valid_from=valid_from,
-                valid_to=valid_to,
-                file_paths=list(self.files),
-                raw_json_dir=raw_json_dir,
-                source_type="manual_upload",
-                source_ref=None,
-                note=None,
-                try_item_mapping=bool(self.try_mapping_var.get()),
-            )
-        except Exception as e:
-            self.progress.stop()
-            messagebox.showerror("Import failed", str(e))
-            self.status_var.set("Import failed.")
+            kind, payload = self._import_queue.get_nowait()
+        except queue.Empty:
+            self.after(150, self._poll_import_queue)
             return
 
         self.progress.stop()
+        if self._import_btn is not None:
+            self._import_btn.config(state="normal")
+
+        if kind == "err":
+            messagebox.showerror("Import failed", str(payload))
+            self.status_var.set("Import failed.")
+            return
+
+        res = payload
         self._log(f"[FlyerImport] flyer_id={res.flyer_id}, assets={res.assets_count}, raw_json={res.raw_json_count}, deals={res.deals_count}")
         self.status_var.set(f"Done. Flyer batch {res.flyer_id}: {res.assets_count} assets, {res.deals_count} deals extracted.")
-
         messagebox.showinfo(
             "Import complete",
             f"Flyer batch created:\n\n"

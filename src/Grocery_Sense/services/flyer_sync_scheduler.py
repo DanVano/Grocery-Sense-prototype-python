@@ -26,6 +26,10 @@ from Grocery_Sense.services.flyer_sync_service import (
 )
 
 _INTERVAL_SECONDS = SYNC_INTERVAL_DAYS * 86400
+# Poll every hour so a laptop that's been suspended for the full interval
+# still catches up on its next wake-up. needs_sync() is just a JSON file
+# read so this is cheap.
+_POLL_SECONDS = 3600
 
 
 class FlyerSyncScheduler:
@@ -83,7 +87,7 @@ class FlyerSyncScheduler:
         with self._lock:
             if self._timer is not None:
                 self._timer.cancel()
-            self._timer = threading.Timer(_INTERVAL_SECONDS, self._periodic_check)
+            self._timer = threading.Timer(_POLL_SECONDS, self._periodic_check)
             self._timer.daemon = True
             self._timer.start()
 

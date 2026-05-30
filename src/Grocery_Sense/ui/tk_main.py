@@ -72,12 +72,24 @@ class GrocerySenseApp(tk.Tk):
         self._build_log_panel()
         self._log("App started.")
 
-        # Start background flyer sync (twice-weekly) + post-sync alert check
+        # Defer scheduler + alert check until widgets are realized and the
+        # mainloop is pumping, so any `after(0, ...)` callbacks dispatched from
+        # workers don't fire against an unrealized window.
         self._flyer_scheduler = FlyerSyncScheduler(on_sync_complete=self._on_flyer_sync_done)
-        self._flyer_scheduler.start()
+        self.after(500, self._flyer_scheduler.start)
+        self.after(1500, lambda: threading.Thread(target=self._check_price_drop_alerts, daemon=True).start())
 
-        # Run price-drop alert check on startup
-        threading.Thread(target=self._check_price_drop_alerts, daemon=True).start()
+        # Cancel background timers cleanly on window close.
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _on_close(self) -> None:
+        try:
+            scheduler = getattr(self, "_flyer_scheduler", None)
+            if scheduler is not None:
+                scheduler.stop()
+        except Exception:
+            pass
+        self.destroy()
 
     # ------------------------------------------------------------------
     # Base UI helpers

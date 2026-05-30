@@ -96,6 +96,7 @@ class ReceiptImportWindow(tk.Toplevel):
         self._queue: "Queue[Tuple[str, Dict[str, Any]]]" = Queue()
         self._worker: Optional[threading.Thread] = None
         self._stop_flag = False
+        self._polling_active = True
 
         # replace toggle
         self.replace_existing_var = tk.BooleanVar(value=False)
@@ -231,6 +232,9 @@ class ReceiptImportWindow(tk.Toplevel):
             return
 
         self._stop_flag = False
+        if not self._polling_active:
+            self._polling_active = True
+            self.after(200, self._poll_queue)
 
         # reset statuses for selected to queued (unless already imported)
         for i in indexes:
@@ -355,14 +359,17 @@ class ReceiptImportWindow(tk.Toplevel):
 
                 elif msg_type == "stopped":
                     self.status_var.set(payload.get("message", "Stopped."))
+                    self._polling_active = False
 
                 elif msg_type == "done":
                     self.status_var.set(payload.get("message", "Done."))
+                    self._polling_active = False
 
         except Empty:
             pass
 
-        self.after(200, self._poll_queue)
+        if getattr(self, "_polling_active", True):
+            self.after(200, self._poll_queue)
 
     # ---------------------------------------------------------------------
     # Review actions
