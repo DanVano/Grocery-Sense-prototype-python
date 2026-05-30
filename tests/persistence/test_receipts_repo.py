@@ -278,9 +278,10 @@ class TestDeleteWithBackupAndRestore:
         )
 
         backup_id = delete_receipt_with_backup(rid)
-        new_id = restore_receipt_from_backup(backup_id)
+        new_id, conflicts = restore_receipt_from_backup(backup_id)
 
         assert new_id != rid
+        assert conflicts == []
 
         restored = get_receipt(new_id)
         assert restored is not None

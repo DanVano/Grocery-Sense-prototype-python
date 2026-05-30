@@ -53,33 +53,50 @@ from Grocery_Sense.services.multibuy_deal_service import MultiBuyDealService
 # Dedupe schema helpers
 # =============================================================================
 
+_DEDUPE_TABLES_READY = False
+_INGEST_TABLES_READY = False
+_DOTENV_LOADED = False
+
+
+def _reset_schema_cache_for_tests() -> None:
+    global _DEDUPE_TABLES_READY, _INGEST_TABLES_READY
+    _DEDUPE_TABLES_READY = False
+    _INGEST_TABLES_READY = False
+
+
+def _load_dotenv_once() -> None:
+    """Idempotently load a top-level `.env` so credentials work per CLAUDE.md
+    ("load from .env or config_store.py"). Walks up from this file to find the
+    nearest `.env`; sets variables only when not already in os.environ."""
+    global _DOTENV_LOADED
+    if _DOTENV_LOADED:
+        return
+    _DOTENV_LOADED = True
+
+    here = Path(__file__).resolve()
+    for parent in [here] + list(here.parents):
+        candidate = parent / ".env"
+        if candidate.exists():
+            try:
+                for line in candidate.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, _, v = line.partition("=")
+                    k = k.strip()
+                    v = v.strip().strip('"').strip("'")
+                    if k and k not in os.environ:
+                        os.environ[k] = v
+            except Exception:
+                pass
+            return
+
+
 def _ensure_dedupe_tables() -> None:
-    """
-    Adds lightweight tables to support dedupe without changing your base schema.
-    """
-    with get_connection() as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS receipt_file_hashes (
-                file_hash TEXT PRIMARY KEY,
-                receipt_id INTEGER NOT NULL,
-                file_path TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                FOREIGN KEY (receipt_id) REFERENCES receipts(id) ON DELETE CASCADE
-            );
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS receipt_signatures (
-                signature TEXT PRIMARY KEY,
-                receipt_id INTEGER NOT NULL,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                FOREIGN KEY (receipt_id) REFERENCES receipts(id) ON DELETE CASCADE
-            );
-            """
-        )
-        conn.commit()
+    """No-op: canonical DDL now lives in data/schema.py:create_tables.
+    Retained for backwards-compatibility with existing call sites + tests."""
+    global _DEDUPE_TABLES_READY
+    _DEDUPE_TABLES_READY = True
 
 
 def _compute_file_sha256(file_path: str | Path, chunk_size: int = 1024 * 1024) -> str:
@@ -185,6 +202,7 @@ class AzureReceiptClient:
         api_key: Optional[str] = None,
         locale: str = "en-US",
     ) -> None:
+        _load_dotenv_once()
         self.endpoint = endpoint or os.environ.get("DOCUMENTINTELLIGENCE_ENDPOINT", "").strip()
         self.api_key = api_key or os.environ.get("DOCUMENTINTELLIGENCE_API_KEY", "").strip()
         self.locale = locale
@@ -258,7 +276,8 @@ class AzureReceiptClient:
 
         src = Path(file_path)
         safe_name = re.sub(r"[^a-zA-Z0-9_\-]+", "_", src.stem)[:80]
-        out_path = raw_dir / f"{safe_name}__{operation_id}.json"
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        out_path = raw_dir / f"{safe_name}__{operation_id}__{stamp}.json"
         out_path.write_text(json.dumps(result_dict, ensure_ascii=False, indent=2), encoding="utf-8")
 
         return AzureReceiptResult(operation_id=operation_id, analyze_result=result_dict, saved_json_path=out_path)
@@ -296,7 +315,11 @@ def _safe_float(x: Any) -> Optional[float]:
     if isinstance(x, (int, float)):
         return float(x)
     s = str(x).strip()
-    s = s.replace(",", "")
+    # European decimal: "1.234,56" or "1234,56" → comma is the decimal separator.
+    if re.match(r"^-?\d{1,3}(\.\d{3})+,\d{1,2}$", s) or re.match(r"^-?\d+,\d{1,2}$", s):
+        s = s.replace(".", "").replace(",", ".")
+    else:
+        s = s.replace(",", "")
     s = re.sub(r"[^\d\.\-]", "", s)
     if not s:
         return None
@@ -360,49 +383,25 @@ def _make_receipt_signature(merchant: str, purchase_date: str, total: Optional[f
     if not merchant or not purchase_date or total is None:
         return None
     m = _normalize_merchant_name(merchant)
-    t = round(float(total), 2)
-    return f"{m}|{purchase_date}|{t:.2f}"
+    # 4-decimal format avoids banker's-rounding 0.5-cent collisions.
+    return f"{m}|{purchase_date}|{float(total):.4f}"
 
 
 def _ensure_ingest_tables() -> None:
-    with get_connection() as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS receipt_raw_json (
-                receipt_id  INTEGER PRIMARY KEY,
-                operation_id TEXT,
-                json_path    TEXT,
-                raw_json     TEXT NOT NULL,
-                created_at   TEXT NOT NULL DEFAULT (datetime('now')),
-                FOREIGN KEY (receipt_id) REFERENCES receipts(id) ON DELETE CASCADE
-            );
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS receipt_line_items (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                receipt_id   INTEGER NOT NULL,
-                line_index   INTEGER NOT NULL,
-                item_id      INTEGER,
-                description  TEXT,
-                quantity     REAL,
-                unit_price   REAL,
-                line_total   REAL,
-                discount     REAL,
-                confidence   INTEGER,
-                created_at   TEXT NOT NULL DEFAULT (datetime('now')),
-                FOREIGN KEY (receipt_id) REFERENCES receipts(id) ON DELETE CASCADE,
-                FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE SET NULL
-            );
-            """
-        )
-        conn.commit()
+    """No-op: canonical DDL now lives in data/schema.py:create_tables.
+    Retained for backwards-compatibility with existing call sites + tests."""
+    global _INGEST_TABLES_READY
+    _INGEST_TABLES_READY = True
 
 
-def _get_or_create_store_id(merchant_name: str, threshold: int = 85) -> int:
+def _get_or_create_store_id(
+    merchant_name: str,
+    threshold: int = 85,
+    *,
+    known_stores: Optional[List[Any]] = None,
+) -> int:
     merchant_name = (merchant_name or "").strip() or "Unknown Store"
-    stores = list_stores(only_favorites=False, order_by_priority=True)
+    stores = known_stores if known_stores is not None else list_stores(only_favorites=False, order_by_priority=True)
     if not stores:
         return int(create_store(name=merchant_name).id)
 
@@ -412,6 +411,12 @@ def _get_or_create_store_id(merchant_name: str, threshold: int = 85) -> int:
     if match:
         best_name, score, _ = match
         if score >= threshold:
+            # Tie-break by shortest matching name (most specific), then alphabetic,
+            # for deterministic linking across syncs.
+            ties = [s for s in stores if fuzz.token_set_ratio(merchant_name, s.name) == score]
+            if ties:
+                ties.sort(key=lambda s: (len(s.name), s.name))
+                return int(ties[0].id)
             for s in stores:
                 if s.name == best_name:
                     return int(s.id)
@@ -624,6 +629,11 @@ def ingest_analyzed_receipt_into_db(
       - receipt_line_items rows
       - prices rows (with norm fields + multi-buy notes)
     Also links file_hash + signature to receipt for dedupe.
+
+    Item resolution (fuzzy mapping, alias upserts, unit-default writes) runs
+    BEFORE opening the outer transaction so its nested writes don't deadlock
+    against our own write lock. The final inserts run inside a single
+    explicit BEGIN/COMMIT for atomicity.
     """
     _ensure_ingest_tables()
     _ensure_dedupe_tables()
@@ -631,6 +641,15 @@ def ingest_analyzed_receipt_into_db(
     docs = analyze_result.get("documents") or []
     if not docs:
         raise ValueError("No documents found in AnalyzeResult JSON.")
+    if len(docs) > 1:
+        # Multi-receipt batches are not currently supported; flag for the caller
+        # so they can surface a messagebox.showwarning rather than silently
+        # dropping the additional documents.
+        import warnings
+        warnings.warn(
+            f"Azure returned {len(docs)} documents; only the first will be ingested.",
+            stacklevel=2,
+        )
 
     receipt_doc = docs[0]
     fields = receipt_doc.get("fields") or {}
@@ -644,7 +663,13 @@ def ingest_analyzed_receipt_into_db(
     if isinstance(tx_date_val, str) and re.match(r"^\d{4}-\d{2}-\d{2}$", tx_date_val.strip()):
         purchase_date = tx_date_val.strip()
     else:
-        purchase_date = datetime.now().strftime("%Y-%m-%d")
+        # File mtime fallback gives a stable per-file date so re-ingest of the
+        # same PDF yields the same signature even when Azure can't extract one.
+        try:
+            mtime = Path(file_path).stat().st_mtime
+            purchase_date = datetime.fromtimestamp(mtime, tz=timezone.utc).strftime("%Y-%m-%d")
+        except Exception:
+            purchase_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     subtotal_val, subtotal_conf = _field_value(_pick_field(fields, ["Subtotal"]))
     tax_val, tax_conf = _field_value(_pick_field(fields, ["TotalTax", "Tax"]))
@@ -656,26 +681,11 @@ def ingest_analyzed_receipt_into_db(
 
     signature = _make_receipt_signature(merchant_name, purchase_date, total)
 
-    # overall confidence heuristic
     confs = [c for c in [merchant_conf, tx_date_conf, subtotal_conf, tax_conf, total_conf] if isinstance(c, (int, float))]
     overall_conf_float = (sum(float(x) for x in confs) / len(confs)) if confs else None
     overall_conf_1_5 = _confidence_to_1_5(overall_conf_float)
 
-    receipt_id = _insert_receipt_row(
-        store_id=store_id,
-        purchase_date=purchase_date,
-        subtotal=subtotal,
-        tax=tax,
-        total=total,
-        source="receipt",
-        file_path=str(file_path),
-        image_confidence_1_5=overall_conf_1_5,
-        azure_request_id=operation_id,
-    )
-
-    _save_raw_json_row(receipt_id, operation_id, saved_json_path, analyze_result)
-
-    # Mapping engine
+    # Mapping engine + normalization (each opens its own connection).
     mapping_service = IngredientMappingService(
         items_repo=items_repo_module,
         aliases_repo=ItemAliasesRepo(),
@@ -683,19 +693,19 @@ def ingest_analyzed_receipt_into_db(
         learn_threshold=0.90,
         accept_threshold=0.75,
     )
-
-    # Unit normalization + deal parsing
     unit_norm = UnitNormalizationService()
     unit_norm.ensure_schema()
-
     deals = MultiBuyDealService()
 
-    # Line items
+    # PASS 1 (pre-transaction): parse + resolve item_ids + run unit-norm so that
+    # any DB writes those services do (alias upserts, default_unit, item create)
+    # are finished before we BEGIN the outer transaction.
     items_field = _pick_field(fields, ["Items", "ItemList", "LineItems"])
     value_array = items_field.get("valueArray") if isinstance(items_field, dict) else None
     if not isinstance(value_array, list):
         value_array = []
 
+    resolved: List[Dict[str, Any]] = []
     for idx, elem in enumerate(value_array):
         obj = (elem or {}).get("valueObject") if isinstance(elem, dict) else None
         if not isinstance(obj, dict):
@@ -711,18 +721,19 @@ def ingest_analyzed_receipt_into_db(
         if not description:
             continue
 
-        quantity = _safe_float(qty_val) or 1.0
+        q_parsed = _safe_float(qty_val)
+        quantity = q_parsed if (q_parsed is not None and q_parsed > 0) else 1.0
         unit_price = _currency_amount(unit_price_val)
         line_total = _currency_amount(total_price_val)
         discount = _currency_amount(discount_val)
 
-        # fill missing pieces
         if unit_price is None and line_total is not None and quantity:
             unit_price = float(line_total) / float(quantity)
         if line_total is None and unit_price is not None and quantity:
             line_total = float(unit_price) * float(quantity)
+        if unit_price is not None and unit_price < 0:
+            unit_price = None
 
-        # Deal normalization (multi-buy, bogo, etc.)
         adj = deals.adjust(
             description=description,
             quantity=quantity,
@@ -735,7 +746,6 @@ def ingest_analyzed_receipt_into_db(
         line_total = adj.line_total
         deal_note = adj.deal_note
 
-        # Confidence heuristic
         conf_candidates = [c for c in [desc_conf, qty_conf, unit_price_conf, total_price_conf, discount_conf] if isinstance(c, (int, float))]
         line_conf_float = (sum(float(x) for x in conf_candidates) / len(conf_candidates)) if conf_candidates else None
         line_conf_1_5 = _confidence_to_1_5(line_conf_float)
@@ -743,26 +753,12 @@ def ingest_analyzed_receipt_into_db(
         mapping = mapping_service.map_to_item(description)
         item_id, map_conf_1_5 = _upsert_item_from_mapping(description, mapping)
 
-        # Determine observed unit (best effort from text)
         observed_unit = "each"
         guessed = unit_norm.guess_unit_from_text(description)
         if guessed != "unknown":
             observed_unit = guessed
 
-        # Write line item row (store the adjusted values)
-        _insert_receipt_line_item(
-            receipt_id=receipt_id,
-            line_index=idx,
-            item_id=item_id,
-            description=description,
-            quantity=quantity,
-            unit_price=unit_price,
-            line_total=line_total,
-            discount=discount,
-            confidence_1_5=line_conf_1_5 or map_conf_1_5,
-        )
-
-        # Price point (only if we have an effective unit price)
+        norm = None
         if unit_price is not None:
             norm = unit_norm.normalize(
                 item_id=item_id,
@@ -770,29 +766,139 @@ def ingest_analyzed_receipt_into_db(
                 observed_unit=observed_unit,
                 description=description,
             )
-            combined_note = f"{norm.note};{deal_note}" if deal_note else norm.note
 
-            _insert_price_point(
-                item_id=item_id,
-                store_id=store_id,
-                receipt_id=receipt_id,
-                date=purchase_date,
-                unit_price=float(unit_price),
-                unit=observed_unit,
-                quantity=quantity,
-                total_price=line_total,
-                raw_name=description,
-                confidence_1_5=(line_conf_1_5 or map_conf_1_5),
-                norm_unit_price=float(norm.norm_unit_price) if norm.norm_unit_price is not None else None,
-                norm_unit=norm.norm_unit,
-                norm_note=combined_note,
+        resolved.append({
+            "idx": idx,
+            "description": description,
+            "item_id": item_id,
+            "quantity": quantity,
+            "unit_price": unit_price,
+            "line_total": line_total,
+            "discount": discount,
+            "observed_unit": observed_unit,
+            "confidence_1_5": line_conf_1_5 or map_conf_1_5,
+            "deal_note": deal_note,
+            "norm": norm,
+        })
+
+    # PASS 2 (transactional): insert receipts row + raw_json + line_items + prices
+    # + dedupe links in one atomic BEGIN/COMMIT.
+    now_iso = _now_utc_iso()
+    raw_json_str = json.dumps(analyze_result, ensure_ascii=False)
+
+    with get_connection() as conn:
+        conn.execute("BEGIN;")
+        try:
+            cur = conn.execute(
+                """
+                INSERT INTO receipts (
+                    store_id, purchase_date, subtotal_amount, tax_amount, total_amount,
+                    source, file_path, image_overall_confidence, keep_image_until,
+                    azure_request_id, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    store_id, purchase_date, subtotal, tax, total,
+                    "receipt", str(file_path), overall_conf_1_5, None,
+                    operation_id, now_iso,
+                ),
+            )
+            receipt_id = int(cur.lastrowid)
+
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO receipt_raw_json (receipt_id, operation_id, json_path, raw_json, created_at)
+                VALUES (?, ?, ?, ?, ?);
+                """,
+                (receipt_id, operation_id, str(saved_json_path), raw_json_str, now_iso),
             )
 
-    # Link dedupe keys
-    if file_hash:
-        _link_hash_to_receipt(file_hash, receipt_id, str(file_path))
-    if signature:
-        _link_signature_to_receipt(signature, receipt_id)
+            line_rows: List[Tuple[Any, ...]] = []
+            price_rows: List[Tuple[Any, ...]] = []
+            for r in resolved:
+                line_rows.append((
+                    receipt_id,
+                    r["idx"],
+                    int(r["item_id"]) if r["item_id"] else None,
+                    r["description"],
+                    r["quantity"],
+                    r["unit_price"],
+                    r["line_total"],
+                    r["discount"],
+                    r["confidence_1_5"],
+                    now_iso,
+                ))
+
+                if r["unit_price"] is None:
+                    continue
+                norm = r["norm"]
+                combined_note = (f"{norm.note};{r['deal_note']}" if r['deal_note'] else norm.note) if norm else r['deal_note']
+                price_rows.append((
+                    int(r["item_id"]),
+                    int(store_id),
+                    int(receipt_id),
+                    None,  # flyer_source_id
+                    "receipt",
+                    purchase_date,
+                    float(r["unit_price"]),
+                    r["observed_unit"],
+                    r["quantity"],
+                    r["line_total"],
+                    r["description"],
+                    r["confidence_1_5"],
+                    float(norm.norm_unit_price) if norm and norm.norm_unit_price is not None else None,
+                    norm.norm_unit if norm else None,
+                    combined_note,
+                    now_iso,
+                ))
+
+            if line_rows:
+                conn.executemany(
+                    """
+                    INSERT INTO receipt_line_items (
+                        receipt_id, line_index, item_id, description, quantity,
+                        unit_price, line_total, discount, confidence, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    line_rows,
+                )
+
+            if price_rows:
+                conn.executemany(
+                    """
+                    INSERT INTO prices (
+                        item_id, store_id, receipt_id, flyer_source_id, source, date,
+                        unit_price, unit, quantity, total_price, raw_name, confidence,
+                        norm_unit_price, norm_unit, norm_note, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    price_rows,
+                )
+
+            if file_hash:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO receipt_file_hashes (file_hash, receipt_id, file_path, created_at)
+                    VALUES (?, ?, ?, ?);
+                    """,
+                    (file_hash, int(receipt_id), str(file_path), now_iso),
+                )
+            if signature:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO receipt_signatures (signature, receipt_id, created_at)
+                    VALUES (?, ?, ?);
+                    """,
+                    (signature, int(receipt_id), now_iso),
+                )
+
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
     return receipt_id
 
@@ -828,9 +934,14 @@ def ingest_receipt_file_outcome(
     # ---- 1) FILE HASH DEDUPE (no Azure call) ----
     file_hash = _compute_file_sha256(p)
     existing = _find_receipt_by_file_hash(file_hash)
+    replaced = False
+    backup_id_for_restore: Optional[int] = None
     if existing is not None:
         if replace_existing:
-            _delete_receipt_cascade(existing)
+            # Take a snapshot before destroying the prior receipt so we can
+            # restore it if the subsequent ingest fails.
+            from Grocery_Sense.data.repositories.receipts_repo import delete_receipt_with_backup
+            backup_id_for_restore = int(delete_receipt_with_backup(int(existing)))
             replaced = True
         else:
             return IngestOutcome(
@@ -840,8 +951,6 @@ def ingest_receipt_file_outcome(
                 replaced_existing=False,
                 existing_receipt_id=int(existing),
             )
-    else:
-        replaced = False
 
     # ---- 2) AZURE ANALYZE ----
     client = AzureReceiptClient(locale=locale)
@@ -854,10 +963,11 @@ def ingest_receipt_file_outcome(
         existing_sig = _find_receipt_by_signature(signature)
         if existing_sig is not None:
             if replace_existing:
-                _delete_receipt_cascade(existing_sig)
+                from Grocery_Sense.data.repositories.receipts_repo import delete_receipt_with_backup
+                backup_id_for_restore = int(delete_receipt_with_backup(int(existing_sig)))
                 replaced = True
             else:
-                # discard the new attempt (don’t add to DB)
+                # discard the new attempt (don't add to DB)
                 try:
                     az.saved_json_path.unlink(missing_ok=True)
                 except Exception:
@@ -871,14 +981,25 @@ def ingest_receipt_file_outcome(
                 )
 
     # ---- 4) INGEST INTO DB ----
-    new_receipt_id = ingest_analyzed_receipt_into_db(
-        file_path=p,
-        operation_id=az.operation_id,
-        analyze_result=az.analyze_result,
-        saved_json_path=az.saved_json_path,
-        store_match_threshold=store_match_threshold,
-        file_hash=file_hash,
-    )
+    try:
+        new_receipt_id = ingest_analyzed_receipt_into_db(
+            file_path=p,
+            operation_id=az.operation_id,
+            analyze_result=az.analyze_result,
+            saved_json_path=az.saved_json_path,
+            store_match_threshold=store_match_threshold,
+            file_hash=file_hash,
+        )
+    except Exception:
+        # Replace-existing fails: auto-restore the pre-delete backup so the
+        # user doesn't silently lose the original receipt.
+        if backup_id_for_restore is not None:
+            try:
+                from Grocery_Sense.data.repositories.receipts_repo import restore_receipt_from_backup
+                restore_receipt_from_backup(backup_id_for_restore)
+            except Exception:
+                pass
+        raise
 
     return IngestOutcome(
         receipt_id=int(new_receipt_id),

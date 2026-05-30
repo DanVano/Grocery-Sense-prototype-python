@@ -320,12 +320,14 @@ class ReceiptBrowserWindow(tk.Toplevel):
             return
 
         try:
-            new_id = restore_receipt_from_backup(int(backup_id))
+            new_id, conflicts = restore_receipt_from_backup(int(backup_id))
         except Exception as e:
             messagebox.showerror("Undo failed", str(e))
             return
 
         self._log(f"[ReceiptBrowser] Undo restore backup {backup_id} -> new receipt_id={new_id}")
+        if conflicts:
+            self._log(f"[ReceiptBrowser] Skipped {len(conflicts)} dedupe key(s) already bound to other receipts")
         self.status_var.set(f"Restored backup #{backup_id} -> new receipt #{new_id}.")
         self.last_backup_id = None
 

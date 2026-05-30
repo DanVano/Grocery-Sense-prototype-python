@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -16,65 +17,9 @@ def _now_utc_iso() -> str:
 # -----------------------------------------------------------------------------
 
 def ensure_receipt_support_tables() -> None:
-    """
-    Ensures optional tables exist:
-      - receipt_raw_json
-      - receipt_line_items
-      - receipt_file_hashes
-      - receipt_signatures
-      - deleted_receipt_backups (for Undo)
-
-    These may already exist from your Azure ingest pipeline; this is safe to call.
-    """
-    with get_connection() as conn:
-        # Undo/backup table
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS deleted_receipt_backups (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                original_receipt_id INTEGER,
-                deleted_at TEXT NOT NULL,
-                backup_json TEXT NOT NULL
-            );
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS receipt_raw_json (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                receipt_id   INTEGER NOT NULL,
-                operation_id TEXT,
-                json_path    TEXT,
-                raw_json     TEXT,
-                created_at   TEXT NOT NULL DEFAULT (datetime('now')),
-                FOREIGN KEY (receipt_id) REFERENCES receipts(id) ON DELETE CASCADE
-            );
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS receipt_file_hashes (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                file_hash   TEXT NOT NULL UNIQUE,
-                receipt_id  INTEGER NOT NULL,
-                file_path   TEXT,
-                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-                FOREIGN KEY (receipt_id) REFERENCES receipts(id) ON DELETE CASCADE
-            );
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS receipt_signatures (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                signature   TEXT NOT NULL UNIQUE,
-                receipt_id  INTEGER NOT NULL,
-                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-                FOREIGN KEY (receipt_id) REFERENCES receipts(id) ON DELETE CASCADE
-            );
-            """
-        )
-        conn.commit()
+    """No-op: canonical DDL now lives in data/schema.py:create_tables.
+    Retained for backwards-compatibility with existing call sites."""
+    return None
 
 
 # -----------------------------------------------------------------------------
@@ -100,9 +45,14 @@ def list_recent_receipts(limit: int = 50, offset: int = 0) -> List[Dict[str, Any
                 COALESCE(s.name, '') AS store_name,
                 r.file_path,
                 r.created_at,
-                (SELECT COUNT(1) FROM receipt_line_items li WHERE li.receipt_id = r.id) AS item_count
+                COALESCE(li.cnt, 0) AS item_count
             FROM receipts r
             LEFT JOIN stores s ON s.id = r.store_id
+            LEFT JOIN (
+                SELECT receipt_id, COUNT(1) AS cnt
+                FROM receipt_line_items
+                GROUP BY receipt_id
+            ) li ON li.receipt_id = r.id
             ORDER BY r.id DESC
             LIMIT ? OFFSET ?;
             """,
@@ -293,12 +243,17 @@ def delete_receipt_with_backup(receipt_id: int) -> int:
     return backup_id
 
 
-def restore_receipt_from_backup(backup_id: int) -> int:
+_MAX_BACKUP_BYTES = 50 * 1024 * 1024
+
+
+def restore_receipt_from_backup(backup_id: int) -> Tuple[int, List[Tuple[str, str]]]:
     """
     Undo delete: restores snapshot into DB as a NEW receipt row (new receipt_id),
     then restores raw_json, line items, prices, and dedupe keys linked to the NEW id.
 
-    Returns new_receipt_id.
+    Returns (new_receipt_id, conflicts) where conflicts is a list of
+    (kind, key) for dedupe rows that already mapped to a different receipt and
+    were therefore skipped (kind in {"signature", "file_hash"}).
     """
     ensure_receipt_support_tables()
 
@@ -311,63 +266,66 @@ def restore_receipt_from_backup(backup_id: int) -> int:
     if not row:
         raise ValueError(f"Backup not found: {backup_id}")
 
-    snapshot = json.loads(row[0])
+    raw_text = row[0] or ""
+    if len(raw_text) > _MAX_BACKUP_BYTES:
+        raise ValueError(f"Backup {backup_id} is too large to restore safely")
+
+    snapshot = json.loads(raw_text)
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("receipt"), dict):
+        raise ValueError(f"Backup {backup_id} is corrupt: missing 'receipt' key")
+    for key in ("line_items", "prices", "file_hashes", "signatures"):
+        val = snapshot.get(key)
+        if val is not None and not isinstance(val, list):
+            raise ValueError(f"Backup {backup_id} is corrupt: '{key}' must be a list")
+
     rec = snapshot["receipt"]
+    conflicts: List[Tuple[str, str]] = []
 
     with get_connection() as conn:
-        # Insert receipt row WITHOUT specifying id (let it autoincrement)
-        cur = conn.execute(
-            """
-            INSERT INTO receipts (
-                store_id, purchase_date, subtotal_amount, tax_amount, total_amount,
-                source, file_path, image_overall_confidence, keep_image_until,
-                azure_request_id, created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-            """,
-            (
-                rec.get("store_id"),
-                rec.get("purchase_date"),
-                rec.get("subtotal_amount"),
-                rec.get("tax_amount"),
-                rec.get("total_amount"),
-                rec.get("source"),
-                rec.get("file_path"),
-                rec.get("image_overall_confidence"),
-                rec.get("keep_image_until"),
-                rec.get("azure_request_id"),
-                rec.get("created_at") or _now_utc_iso(),
-            ),
-        )
-        new_receipt_id = int(cur.lastrowid)
-
-        # raw json
-        raw = snapshot.get("raw_json")
-        if raw:
-            conn.execute(
+        conn.execute("BEGIN;")
+        try:
+            cur = conn.execute(
                 """
-                INSERT OR REPLACE INTO receipt_raw_json (receipt_id, operation_id, json_path, raw_json, created_at)
-                VALUES (?, ?, ?, ?, ?);
+                INSERT INTO receipts (
+                    store_id, purchase_date, subtotal_amount, tax_amount, total_amount,
+                    source, file_path, image_overall_confidence, keep_image_until,
+                    azure_request_id, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """,
                 (
-                    new_receipt_id,
-                    raw.get("operation_id"),
-                    raw.get("json_path"),
-                    raw.get("raw_json"),
-                    raw.get("created_at") or _now_utc_iso(),
+                    rec.get("store_id"),
+                    rec.get("purchase_date"),
+                    rec.get("subtotal_amount"),
+                    rec.get("tax_amount"),
+                    rec.get("total_amount"),
+                    rec.get("source"),
+                    rec.get("file_path"),
+                    rec.get("image_overall_confidence"),
+                    rec.get("keep_image_until"),
+                    rec.get("azure_request_id"),
+                    rec.get("created_at") or _now_utc_iso(),
                 ),
             )
+            new_receipt_id = int(cur.lastrowid)
 
-        # line items
-        for li in snapshot.get("line_items", []):
-            conn.execute(
-                """
-                INSERT INTO receipt_line_items (
-                    receipt_id, line_index, item_id, description, quantity,
-                    unit_price, line_total, discount, confidence, created_at
+            raw = snapshot.get("raw_json")
+            if raw:
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO receipt_raw_json (receipt_id, operation_id, json_path, raw_json, created_at)
+                    VALUES (?, ?, ?, ?, ?);
+                    """,
+                    (
+                        new_receipt_id,
+                        raw.get("operation_id"),
+                        raw.get("json_path"),
+                        raw.get("raw_json"),
+                        raw.get("created_at") or _now_utc_iso(),
+                    ),
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-                """,
+
+            line_rows = [
                 (
                     new_receipt_id,
                     li.get("line_index"),
@@ -379,24 +337,36 @@ def restore_receipt_from_backup(backup_id: int) -> int:
                     li.get("discount"),
                     li.get("confidence"),
                     li.get("created_at") or _now_utc_iso(),
-                ),
-            )
-
-        # prices
-        for p in snapshot.get("prices", []):
-            conn.execute(
-                """
-                INSERT INTO prices (
-                    item_id, store_id, receipt_id, flyer_source_id, source, date,
-                    unit_price, unit, quantity, total_price, raw_name, confidence, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-                """,
-                (
+                for li in snapshot.get("line_items", []) or []
+            ]
+            if line_rows:
+                conn.executemany(
+                    """
+                    INSERT INTO receipt_line_items (
+                        receipt_id, line_index, item_id, description, quantity,
+                        unit_price, line_total, discount, confidence, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    line_rows,
+                )
+
+            price_rows: List[Tuple[Any, ...]] = []
+            for p in snapshot.get("prices", []) or []:
+                fsid = p.get("flyer_source_id")
+                if fsid is not None:
+                    ok = conn.execute(
+                        "SELECT 1 FROM flyer_sources WHERE id = ?;",
+                        (int(fsid),),
+                    ).fetchone()
+                    if not ok:
+                        fsid = None
+                price_rows.append((
                     p.get("item_id"),
                     p.get("store_id"),
                     new_receipt_id,
-                    p.get("flyer_source_id"),
+                    fsid,
                     p.get("source"),
                     p.get("date"),
                     p.get("unit_price"),
@@ -406,31 +376,51 @@ def restore_receipt_from_backup(backup_id: int) -> int:
                     p.get("raw_name"),
                     p.get("confidence"),
                     p.get("created_at") or _now_utc_iso(),
-                ),
-            )
+                ))
+            if price_rows:
+                conn.executemany(
+                    """
+                    INSERT INTO prices (
+                        item_id, store_id, receipt_id, flyer_source_id, source, date,
+                        unit_price, unit, quantity, total_price, raw_name, confidence, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    price_rows,
+                )
 
-        # dedupe keys: relink to NEW id
-        for fh in snapshot.get("file_hashes", []):
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO receipt_file_hashes (file_hash, receipt_id, file_path, created_at)
-                VALUES (?, ?, ?, ?);
-                """,
-                (fh.get("file_hash"), new_receipt_id, fh.get("file_path"), fh.get("created_at") or _now_utc_iso()),
-            )
+            # Dedupe keys: use INSERT (not REPLACE) so we don't silently
+            # overwrite another receipt's existing dedupe row.
+            for fh in snapshot.get("file_hashes", []) or []:
+                fh_val = fh.get("file_hash")
+                if not fh_val:
+                    continue
+                try:
+                    conn.execute(
+                        "INSERT INTO receipt_file_hashes (file_hash, receipt_id, file_path, created_at) VALUES (?, ?, ?, ?);",
+                        (fh_val, new_receipt_id, fh.get("file_path"), fh.get("created_at") or _now_utc_iso()),
+                    )
+                except sqlite3.IntegrityError:
+                    conflicts.append(("file_hash", str(fh_val)))
 
-        for sig in snapshot.get("signatures", []):
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO receipt_signatures (signature, receipt_id, created_at)
-                VALUES (?, ?, ?);
-                """,
-                (sig.get("signature"), new_receipt_id, sig.get("created_at") or _now_utc_iso()),
-            )
+            for sig in snapshot.get("signatures", []) or []:
+                sig_val = sig.get("signature")
+                if not sig_val:
+                    continue
+                try:
+                    conn.execute(
+                        "INSERT INTO receipt_signatures (signature, receipt_id, created_at) VALUES (?, ?, ?);",
+                        (sig_val, new_receipt_id, sig.get("created_at") or _now_utc_iso()),
+                    )
+                except sqlite3.IntegrityError:
+                    conflicts.append(("signature", str(sig_val)))
 
-        conn.commit()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
-    return new_receipt_id
+    return new_receipt_id, conflicts
 
 
 def list_deleted_backups(limit: int = 25) -> List[Dict[str, Any]]:

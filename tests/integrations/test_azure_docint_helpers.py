@@ -141,11 +141,12 @@ class TestMakeReceiptSignature:
         sig = _make_receipt_signature("TEST MART", "2026-04-22", 25.00)
         assert sig.startswith("test mart|")
 
-    def test_rounds_total_to_cents(self):
-        # 25.001 and 25.005 both round to 25.00/25.01 respectively via round-half-to-even.
-        sig_a = _make_receipt_signature("x", "2026-04-22", 25.001)
-        sig_b = _make_receipt_signature("x", "2026-04-22", 25.00)
-        assert sig_a == sig_b  # both round to 25.00
+    def test_precision_avoids_half_cent_collision(self):
+        # Signatures use 4-decimal precision so 1.005 vs 1.015 don't collide via
+        # banker's rounding (per M-62). Truly equal totals still collapse.
+        sig_eq_a = _make_receipt_signature("x", "2026-04-22", 25.00)
+        sig_eq_b = _make_receipt_signature("x", "2026-04-22", 25.0000)
+        assert sig_eq_a == sig_eq_b
 
     def test_returns_none_when_any_piece_missing(self):
         assert _make_receipt_signature("", "2026-04-22", 25.00) is None
@@ -154,7 +155,7 @@ class TestMakeReceiptSignature:
 
     def test_format_matches_pipe_delimited(self):
         sig = _make_receipt_signature("Test Mart", "2026-04-22", 25.00)
-        assert sig == "test mart|2026-04-22|25.00"
+        assert sig == "test mart|2026-04-22|25.0000"
 
 
 # ---------------------------------------------------------------------------
