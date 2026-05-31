@@ -115,6 +115,8 @@ class FlyerIngestService:
         """
         Ingest PDFs/images: store assets + azure raw json + extracted deals.
         """
+        if store_id is None:
+            raise ValueError("store_id is required for flyer ingest.")
         self.repo.ensure_schema()
         self.unit_norm.ensure_schema()
 
@@ -279,6 +281,9 @@ class FlyerIngestService:
         data = json.loads(p.read_text(encoding="utf-8"))
         if not isinstance(data, list):
             raise ValueError("DealRecords JSON must be a list of objects.")
+
+        if store_id is None:
+            raise ValueError("store_id is required for flyer ingest.")
 
         flyer_id = self.repo.create_flyer_batch(
             store_id=store_id,
