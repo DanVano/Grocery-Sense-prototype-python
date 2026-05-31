@@ -361,6 +361,23 @@ class BasketOptimizerService:
         soft_map = getattr(eff, "soft_excludes", {}) or {}
         hits: List[Tuple[str, List[str]]] = []
         starred = False
+
+        # Resolve household membership ONCE (invariant for this call) rather than
+        # per matched term. Compare by id (not name) — two members can share a name.
+        resolved = False
+        name_to_id: Dict[str, int] = {}
+        master_id = 0
+        if preferences_service is not None and config_store is not None:
+            try:
+                name_to_id = {
+                    getattr(mm, "name", ""): int(getattr(mm, "id", 0) or 0)
+                    for mm in config_store.list_members()  # type: ignore[attr-defined]
+                }
+                master_id = int(getattr(config_store.get_master_member(), "id", 0) or 0)  # type: ignore[attr-defined]
+                resolved = True
+            except Exception:
+                resolved = False
+
         for term, members in soft_map.items():
             if not term:
                 continue
@@ -368,16 +385,9 @@ class BasketOptimizerService:
                 mems = list(members or [])
                 hits.append((str(term), mems))
                 # star only if any SECONDARY member is involved
-                if preferences_service is not None:
-                    try:
-                        # Compare by id (not name) — two members can share a name.
-                        members_list = config_store.list_members()  # type: ignore[attr-defined]
-                        name_to_id = {getattr(mm, "name", ""): getattr(mm, "id", 0) for mm in members_list}
-                        master_id = getattr(config_store.get_master_member(), "id", 0)  # type: ignore[attr-defined]
-                        mem_ids = {int(name_to_id.get(m, -1)) for m in mems}
-                        if any(mid != int(master_id) for mid in mem_ids if mid >= 0):
-                            starred = True
-                    except Exception:
+                if resolved:
+                    mem_ids = {name_to_id.get(m, -1) for m in mems}
+                    if any(mid != master_id for mid in mem_ids if mid >= 0):
                         starred = True
                 else:
                     starred = True
