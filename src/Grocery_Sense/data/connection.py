@@ -74,6 +74,13 @@ def get_connection(base_dir: Optional[Path] = None) -> sqlite3.Connection:
     RuntimeError immediately if corruption is detected.
     """
     if _TEST_DB_PATH is not None:
+        if _TEST_DB_PATH == ":memory:":
+            raise ValueError(
+                "Grocery Sense opens one SQLite connection per call, so a "
+                "':memory:' database would be a fresh, empty DB on every call "
+                "(schema and data invisible across repos). Use a temp-file DB "
+                "for tests instead of ':memory:'."
+            )
         db_path = Path(_TEST_DB_PATH)
     else:
         db_path = get_db_path(base_dir)
