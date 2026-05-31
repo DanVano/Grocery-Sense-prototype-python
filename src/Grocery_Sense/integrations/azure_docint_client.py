@@ -406,20 +406,20 @@ def _get_or_create_store_id(
         return int(create_store(name=merchant_name).id)
 
     store_names = [s.name for s in stores]
-    match = process.extractOne(merchant_name, store_names, scorer=fuzz.token_set_ratio)
+    # One scoring pass: process.extract returns (name, score, index) for all
+    # candidates; tie-break from that result instead of re-scoring every store.
+    results = process.extract(
+        merchant_name, store_names, scorer=fuzz.token_set_ratio, limit=len(store_names)
+    )
 
-    if match:
-        best_name, score, _ = match
-        if score >= threshold:
+    if results:
+        best_score = results[0][1]
+        if best_score >= threshold:
             # Tie-break by shortest matching name (most specific), then alphabetic,
             # for deterministic linking across syncs.
-            ties = [s for s in stores if fuzz.token_set_ratio(merchant_name, s.name) == score]
-            if ties:
-                ties.sort(key=lambda s: (len(s.name), s.name))
-                return int(ties[0].id)
-            for s in stores:
-                if s.name == best_name:
-                    return int(s.id)
+            ties = [stores[idx] for (_n, sc, idx) in results if sc == best_score]
+            ties.sort(key=lambda s: (len(s.name), s.name))
+            return int(ties[0].id)
 
     return int(create_store(name=merchant_name).id)
 
