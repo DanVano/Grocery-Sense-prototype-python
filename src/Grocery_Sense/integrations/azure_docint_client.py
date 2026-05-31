@@ -74,7 +74,11 @@ def _load_dotenv_once() -> None:
     _DOTENV_LOADED = True
 
     here = Path(__file__).resolve()
-    for parent in [here] + list(here.parents):
+    # .../src/Grocery_Sense/integrations/azure_docint_client.py -> parents[3] is the
+    # repo root. Bound the search there so an unrelated ancestor .env (e.g. another
+    # project's secrets) is never imported into this process.
+    repo_root = here.parents[3] if len(here.parents) > 3 else here.parents[-1]
+    for parent in here.parents:
         candidate = parent / ".env"
         if candidate.exists():
             try:
@@ -90,6 +94,8 @@ def _load_dotenv_once() -> None:
             except Exception:
                 pass
             return
+        if parent == repo_root:
+            break
 
 
 def _ensure_dedupe_tables() -> None:
