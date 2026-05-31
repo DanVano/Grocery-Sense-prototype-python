@@ -1,11 +1,24 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from Grocery_Sense.data.connection import connection_scope, get_connection
+from Grocery_Sense.data.connection import connection_scope, get_connection, get_db_path
+
+
+# Schema-ensure guards: keyed by resolved DB path so per-test tmp DBs each
+# re-create price_drop_alerts; the lock serialises the CREATE/ALTER across the
+# concurrent startup + post-sync alert-check threads.
+_ALERTS_TABLES_READY: set = set()
+_ALERTS_SCHEMA_LOCK = threading.Lock()
+
+
+def _alerts_db_key() -> str:
+    from Grocery_Sense.data import connection as _conn
+    return _conn._TEST_DB_PATH or str(get_db_path())
 from Grocery_Sense.data.repositories import stores_repo, prices_repo
 from Grocery_Sense.data.repositories.items_repo import get_items_by_ids
 from Grocery_Sense.data.repositories.prices_repo import (
@@ -470,6 +483,16 @@ class PriceDropAlertService:
     # ----------------------- internals -----------------------
 
     def _ensure_tables(self) -> None:
+        key = _alerts_db_key()
+        if key in _ALERTS_TABLES_READY:
+            return
+        with _ALERTS_SCHEMA_LOCK:
+            if key in _ALERTS_TABLES_READY:  # re-check inside the lock
+                return
+            self._build_alert_tables()
+            _ALERTS_TABLES_READY.add(key)
+
+    def _build_alert_tables(self) -> None:
         with connection_scope() as conn:
             conn.execute(
                 """

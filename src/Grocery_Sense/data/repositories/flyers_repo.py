@@ -4,11 +4,16 @@ import functools
 import hashlib
 import re
 import sqlite3
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from Grocery_Sense.data.connection import connection_scope, get_connection
+
+# Serialises ensure_schema across threads so the flyer_deals rebuild migration
+# (DROP/RENAME) can never run concurrently with another caller.
+_FLYERS_SCHEMA_LOCK = threading.Lock()
 
 # -----------------------------------------------------------------------------
 # Helpers: hashing (used by ingest), phrase-safe matching (used by preferences)
@@ -181,6 +186,13 @@ class FlyersRepo:
     def ensure_schema(self) -> None:
         if getattr(self, "_schema_ready", False):
             return
+        with _FLYERS_SCHEMA_LOCK:
+            if getattr(self, "_schema_ready", False):  # re-check inside the lock
+                return
+            self._build_schema()
+            self._schema_ready = True
+
+    def _build_schema(self) -> None:
         with connection_scope() as conn:
             conn.execute(
                 """
@@ -263,7 +275,6 @@ class FlyersRepo:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_flyer_batches_valid ON flyer_batches(valid_from, valid_to)")
 
             conn.commit()
-        self._schema_ready = True
 
     @staticmethod
     def _migrate_flyer_deals_item_id_to_integer(conn: sqlite3.Connection) -> None:

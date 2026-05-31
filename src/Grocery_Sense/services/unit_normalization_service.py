@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import threading
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -10,6 +11,9 @@ from Grocery_Sense.data.connection import _TEST_DB_PATH, connection_scope, get_c
 # Schema-ready cache keyed by resolved DB path, so swapping DBs (e.g. pytest
 # fixtures) automatically invalidates without each caller having to reset.
 _SCHEMA_READY: set = set()
+# Serialises the check-then-ALTER so two background threads can't both run the
+# column-add and raise "duplicate column name".
+_SCHEMA_LOCK = threading.Lock()
 
 
 def _current_db_key() -> str:
@@ -87,9 +91,12 @@ class UnitNormalizationService:
         key = _current_db_key()
         if key in _SCHEMA_READY:
             return
-        self._ensure_items_default_unit_column()
-        self._ensure_prices_norm_columns()
-        _SCHEMA_READY.add(key)
+        with _SCHEMA_LOCK:
+            if key in _SCHEMA_READY:  # re-check inside the lock
+                return
+            self._ensure_items_default_unit_column()
+            self._ensure_prices_norm_columns()
+            _SCHEMA_READY.add(key)
 
     def _column_exists(self, table: str, col: str) -> bool:
         with connection_scope() as conn:

@@ -80,6 +80,10 @@ def get_connection(base_dir: Optional[Path] = None) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row  # nicer dict-like access
     conn.execute("PRAGMA foreign_keys = ON")
+    # Wait briefly for a competing writer instead of failing instantly with
+    # "database is locked" when background threads (flyer sync, alert check)
+    # overlap on the same file.
+    conn.execute("PRAGMA busy_timeout = 5000")
     if str(db_path) not in _integrity_checked and str(db_path) != ":memory:":
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA synchronous = NORMAL")

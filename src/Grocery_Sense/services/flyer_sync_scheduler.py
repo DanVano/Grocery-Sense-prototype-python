@@ -45,6 +45,8 @@ class FlyerSyncScheduler:
         self._on_sync_complete = on_sync_complete
         self._timer: Optional[threading.Timer] = None
         self._lock = threading.Lock()
+        # Guards run_sync itself (the _lock above only guards the timer object).
+        self._sync_lock = threading.Lock()
 
     def start(self) -> None:
         """
@@ -92,13 +94,21 @@ class FlyerSyncScheduler:
             self._timer.start()
 
     def _run_and_notify(self, *, force: bool) -> None:
+        # Only one sync at a time: a manual trigger and the periodic timer can
+        # fire together. The in-flight run already covers the work, so skip the
+        # re-entry rather than double-inserting flyer batches.
+        if not self._sync_lock.acquire(blocking=False):
+            return
         try:
-            result = run_sync(force=force)
-        except Exception as exc:
-            result = FlyerSyncResult(errors=[str(exc)])
-
-        if result.ran and self._on_sync_complete is not None:
             try:
-                self._on_sync_complete(result)
-            except Exception:
-                traceback.print_exc()
+                result = run_sync(force=force)
+            except Exception as exc:
+                result = FlyerSyncResult(errors=[str(exc)])
+
+            if result.ran and self._on_sync_complete is not None:
+                try:
+                    self._on_sync_complete(result)
+                except Exception:
+                    traceback.print_exc()
+        finally:
+            self._sync_lock.release()
