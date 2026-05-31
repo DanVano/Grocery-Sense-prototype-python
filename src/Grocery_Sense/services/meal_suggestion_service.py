@@ -179,10 +179,9 @@ def _compute_price_contribution_for_ingredient(
 
 def _compute_price_score_for_recipe(
     recipe: Dict[str, Any],
-    price_history_service: Any,
+    baseline_map: Dict[str, Optional[float]],
     deals_by_ingredient: Dict[str, List[Deal]],
     reasons_out: List[str],
-    baseline_window_days: int = 90,
 ) -> float:
     ingredients = _extract_core_ingredients(recipe)
     if not ingredients:
@@ -193,15 +192,9 @@ def _compute_price_score_for_recipe(
     for ing in ingredients:
         ing_low = ing.lower()
 
-        baseline = None
-        if price_history_service is not None:
-            try:
-                baseline = price_history_service.get_baseline_price(
-                    ing_low,
-                    window_days=baseline_window_days,
-                )
-            except AttributeError:
-                baseline = None
+        # Baselines are precomputed once per run (see suggest_meals_for_week) so
+        # we don't issue an item lookup per ingredient per recipe.
+        baseline = baseline_map.get(ing_low)
 
         deals = deals_by_ingredient.get(ing_low, [])
         contrib = _compute_price_contribution_for_ingredient(
@@ -405,6 +398,19 @@ class MealSuggestionService:
         all_ingredients = _collect_all_ingredients(filtered)
         deals_by_ingredient = _fetch_deals_for_ingredients(all_ingredients)
 
+        # 2b) Precompute baseline (usual) prices ONCE for every ingredient, so the
+        # per-recipe scoring below is a dict lookup instead of an item+stats query
+        # per (recipe, ingredient).
+        baseline_map: Dict[str, Optional[float]] = {}
+        if self.price_history_service is not None:
+            for ing in all_ingredients:
+                try:
+                    baseline_map[ing] = self.price_history_service.get_baseline_price(
+                        ing, window_days=90
+                    )
+                except Exception:
+                    baseline_map[ing] = None
+
         # 3) Score each recipe
         suggestions: List[SuggestedMeal] = []
 
@@ -413,7 +419,7 @@ class MealSuggestionService:
 
             price_score = _compute_price_score_for_recipe(
                 r,
-                self.price_history_service,
+                baseline_map,
                 deals_by_ingredient,
                 reasons,
             )

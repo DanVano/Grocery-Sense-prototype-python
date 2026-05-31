@@ -30,6 +30,7 @@ from Grocery_Sense.data.schema import initialize_database
 
 from Grocery_Sense.services.shopping_list_service import ShoppingListService
 from Grocery_Sense.services.meal_suggestion_service import MealSuggestionService, explain_suggested_meal
+from Grocery_Sense.services.price_history_service import PriceHistoryService
 from Grocery_Sense.services.flyer_sync_scheduler import FlyerSyncScheduler
 
 from Grocery_Sense.services.weekly_planner_service import (
@@ -60,7 +61,9 @@ class GrocerySenseApp(tk.Tk):
         initialize_database()
 
         self.shopping_list_service = ShoppingListService()
-        self.meal_suggestion_service = MealSuggestionService(price_history_service=None)
+        self.meal_suggestion_service = MealSuggestionService(
+            price_history_service=PriceHistoryService()
+        )
         self.weekly_planner_service = WeeklyPlannerService(
             meal_suggestion_service=self.meal_suggestion_service,
             shopping_list_service=self.shopping_list_service,
