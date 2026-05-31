@@ -260,7 +260,7 @@ def _fetch_deals_for_ingredients(
     """
     import datetime as _dt
     from collections import defaultdict
-    from Grocery_Sense.data.connection import get_connection
+    from Grocery_Sense.data.connection import connection_scope
 
     if not ingredients:
         return {}
@@ -268,7 +268,7 @@ def _fetch_deals_for_ingredients(
     today = _dt.date.today().isoformat()
 
     try:
-        with get_connection() as conn:
+        with connection_scope() as conn:
             rows = conn.execute(
                 """
                 SELECT

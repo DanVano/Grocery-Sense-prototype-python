@@ -30,7 +30,7 @@ from __future__ import annotations
 from contextlib import closing
 from typing import Dict, List, Optional, Tuple
 
-from Grocery_Sense.data.connection import get_connection
+from Grocery_Sense.data.connection import connection_scope, get_connection
 from Grocery_Sense.domain.models import Item
 
 
@@ -105,7 +105,7 @@ def create_item(
     if not name_clean:
         raise ValueError("canonical_name cannot be empty")
 
-    with get_connection() as conn, closing(conn.cursor()) as cur:
+    with connection_scope() as conn, closing(conn.cursor()) as cur:
         cur.execute(
             """
             INSERT OR IGNORE INTO items (
@@ -150,7 +150,7 @@ def get_item_by_id(item_id: int) -> Optional[Item]:
     """
     Fetch an Item by id.
     """
-    with get_connection() as conn, closing(conn.cursor()) as cur:
+    with connection_scope() as conn, closing(conn.cursor()) as cur:
         cur.execute(
             """
             SELECT
@@ -185,7 +185,7 @@ def get_item_by_name(canonical_name: str) -> Optional[Item]:
 
     name_low = name_clean.lower()
 
-    with get_connection() as conn, closing(conn.cursor()) as cur:
+    with connection_scope() as conn, closing(conn.cursor()) as cur:
         cur.execute(
             """
             SELECT
@@ -214,7 +214,7 @@ def list_all_item_names() -> List[Tuple[int, str]]:
 
     Used by IngredientMappingService for fuzzy matching.
     """
-    with get_connection() as conn, closing(conn.cursor()) as cur:
+    with connection_scope() as conn, closing(conn.cursor()) as cur:
         cur.execute(
             """
             SELECT id, canonical_name
@@ -241,7 +241,7 @@ def list_items(include_untracked: bool = False) -> List[Item]:
     """
     List items, optionally including untracked ones.
     """
-    with get_connection() as conn, closing(conn.cursor()) as cur:
+    with connection_scope() as conn, closing(conn.cursor()) as cur:
         if include_untracked:
             cur.execute(
                 """
@@ -286,7 +286,7 @@ def set_item_tracked(item_id: int, is_tracked: bool) -> None:
     """
     Mark an item as tracked/untracked.
     """
-    with get_connection() as conn, closing(conn.cursor()) as cur:
+    with connection_scope() as conn, closing(conn.cursor()) as cur:
         cur.execute(
             """
             UPDATE items
@@ -332,7 +332,7 @@ def update_item_notes(item_id: int, notes: Optional[str]) -> None:
     """
     Update notes field.
     """
-    with get_connection() as conn, closing(conn.cursor()) as cur:
+    with connection_scope() as conn, closing(conn.cursor()) as cur:
         cur.execute(
             """
             UPDATE items

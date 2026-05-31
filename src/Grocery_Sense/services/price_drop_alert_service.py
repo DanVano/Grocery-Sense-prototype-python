@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from Grocery_Sense.data.connection import get_connection
+from Grocery_Sense.data.connection import connection_scope, get_connection
 from Grocery_Sense.data.repositories import stores_repo, prices_repo
 from Grocery_Sense.data.repositories.items_repo import get_items_by_ids
 from Grocery_Sense.data.repositories.prices_repo import (
@@ -317,7 +317,7 @@ class PriceDropAlertService:
 
     def get_open_alerts(self) -> List[Dict[str, Any]]:
         self._ensure_tables()
-        with get_connection() as conn:
+        with connection_scope() as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
@@ -331,7 +331,7 @@ class PriceDropAlertService:
 
     def dismiss_alert(self, alert_id: int) -> None:
         self._ensure_tables()
-        with get_connection() as conn:
+        with connection_scope() as conn:
             conn.execute(
                 """
                 UPDATE price_drop_alerts
@@ -354,7 +354,7 @@ class PriceDropAlertService:
         since = (datetime.now() - timedelta(days=int(max(1, days)))).strftime("%Y-%m-%d")
 
         inserted = 0
-        with get_connection() as conn:
+        with connection_scope() as conn:
             conn.row_factory = sqlite3.Row
 
             rows = conn.execute(
@@ -470,7 +470,7 @@ class PriceDropAlertService:
     # ----------------------- internals -----------------------
 
     def _ensure_tables(self) -> None:
-        with get_connection() as conn:
+        with connection_scope() as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS price_drop_alerts (
@@ -533,7 +533,7 @@ class PriceDropAlertService:
     def _persist_engine_alerts(self, alerts: List[Dict[str, Any]]) -> int:
         self._ensure_tables()
 
-        with get_connection() as conn:
+        with connection_scope() as conn:
             conn.row_factory = sqlite3.Row
             dismissed_keys = self._load_recent_dismissed_keys(conn)
 

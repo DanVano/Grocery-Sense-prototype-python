@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Dict, List, Optional, Tuple
 
-from Grocery_Sense.data.connection import get_connection
+from Grocery_Sense.data.connection import connection_scope, get_connection
 from Grocery_Sense.data.schema import initialize_database
 from Grocery_Sense.data.repositories.stores_repo import create_store, list_stores
 from Grocery_Sense.data.repositories import items_repo
@@ -130,7 +130,7 @@ def reset_all_demo_data() -> None:
     """
     initialize_database()
 
-    with get_connection() as conn:
+    with connection_scope() as conn:
         cur = conn.cursor()
 
         # child → parent order. Tables added since v0 may not exist on an

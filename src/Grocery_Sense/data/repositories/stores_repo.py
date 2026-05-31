@@ -10,7 +10,7 @@ from typing import List, Optional, Iterable
 from contextlib import closing
 from datetime import datetime, timezone
 
-from Grocery_Sense.data.connection import get_connection
+from Grocery_Sense.data.connection import connection_scope, get_connection
 from Grocery_Sense.domain.models import Store
 
 
@@ -62,7 +62,7 @@ def create_store(
     """
     Insert a new store and return the Store object.
     """
-    with get_connection() as conn, closing(conn.cursor()) as cur:
+    with connection_scope() as conn, closing(conn.cursor()) as cur:
         cur.execute(
             """
             INSERT INTO stores (
@@ -111,7 +111,7 @@ def get_store_by_id(store_id: int) -> Optional[Store]:
     """
     Fetch a single store by ID.
     """
-    with get_connection() as conn, closing(conn.cursor()) as cur:
+    with connection_scope() as conn, closing(conn.cursor()) as cur:
         cur.execute(
             """
             SELECT
@@ -148,7 +148,7 @@ def list_stores(
         {order_clause}{limit_clause}
     """
 
-    with get_connection() as conn, closing(conn.cursor()) as cur:
+    with connection_scope() as conn, closing(conn.cursor()) as cur:
         if limit is None:
             cur.execute(query)
         else:
@@ -162,7 +162,7 @@ def set_store_favorite(store_id: int, is_favorite: bool, priority: Optional[int]
     """
     Mark a store as favorite / not favorite and optionally update its priority.
     """
-    with get_connection() as conn, closing(conn.cursor()) as cur:
+    with connection_scope() as conn, closing(conn.cursor()) as cur:
         if priority is not None:
             cur.execute(
                 """
@@ -193,7 +193,7 @@ def update_store_address(
     """
     Update address-related fields for a store.
     """
-    with get_connection() as conn, closing(conn.cursor()) as cur:
+    with connection_scope() as conn, closing(conn.cursor()) as cur:
         cur.execute(
             """
             UPDATE stores
@@ -209,7 +209,7 @@ def delete_store(store_id: int) -> None:
     """
     Hard delete a store. In the future we might prefer soft-delete.
     """
-    with get_connection() as conn, closing(conn.cursor()) as cur:
+    with connection_scope() as conn, closing(conn.cursor()) as cur:
         cur.execute("DELETE FROM stores WHERE id = ?", (store_id,))
         conn.commit()
 
@@ -227,7 +227,7 @@ def upsert_store_from_flipp(
     Ensure there is a Store row for a given Flipp store ID.
     If it exists, update basic info; otherwise, create it.
     """
-    with get_connection() as conn, closing(conn.cursor()) as cur:
+    with connection_scope() as conn, closing(conn.cursor()) as cur:
         cur.execute(
             """
             SELECT

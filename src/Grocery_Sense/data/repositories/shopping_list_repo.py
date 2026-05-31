@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
-from Grocery_Sense.data.connection import get_connection
+from Grocery_Sense.data.connection import connection_scope, get_connection
 
 
 @dataclass
@@ -51,7 +51,7 @@ def list_active_items(
         "added_by_member_id, is_active, planned_store_id, item_id FROM shopping_list "
         "WHERE is_active = 1 AND is_deleted = 0"
     )
-    with get_connection() as conn:
+    with connection_scope() as conn:
         if store_id is None:
             if include_checked_off:
                 sql = cols + " ORDER BY id DESC"
@@ -69,7 +69,7 @@ def list_active_items(
 
 
 def list_all_items() -> List[ShoppingListRow]:
-    with get_connection() as conn:
+    with connection_scope() as conn:
         rows = conn.execute(
             """
             SELECT
@@ -93,7 +93,7 @@ def list_all_items() -> List[ShoppingListRow]:
 
 
 def get_item(row_id: int) -> Optional[ShoppingListRow]:
-    with get_connection() as conn:
+    with connection_scope() as conn:
         row = conn.execute(
             """
             SELECT id, display_name, quantity, unit, category,
@@ -114,7 +114,7 @@ def bulk_add_items(rows: List[Tuple]) -> int:
     """
     if not rows:
         return 0
-    with get_connection() as conn:
+    with connection_scope() as conn:
         cur = conn.executemany(
             """
             INSERT INTO shopping_list
@@ -141,7 +141,7 @@ def add_item(
     planned_store_id: Optional[int] = None,
     item_id: Optional[int] = None,
 ) -> int:
-    with get_connection() as conn:
+    with connection_scope() as conn:
         cur = conn.execute(
             """
             INSERT INTO shopping_list
@@ -165,7 +165,7 @@ def add_item(
 
 
 def set_checked_off(item_id: int, checked: bool) -> None:
-    with get_connection() as conn:
+    with connection_scope() as conn:
         conn.execute(
             "UPDATE shopping_list SET is_checked_off = ? WHERE id = ?",
             (1 if checked else 0, int(item_id)),
@@ -174,20 +174,20 @@ def set_checked_off(item_id: int, checked: bool) -> None:
 
 
 def delete_item(item_id: int) -> None:
-    with get_connection() as conn:
+    with connection_scope() as conn:
         conn.execute("UPDATE shopping_list SET is_deleted = 1 WHERE id = ?", (int(item_id),))
         conn.commit()
 
 
 def clear_all_items() -> None:
-    with get_connection() as conn:
+    with connection_scope() as conn:
         conn.execute("UPDATE shopping_list SET is_deleted = 1")
         conn.commit()
 
 
 def clear_checked_off_items() -> None:
     """Mark only checked-off active items as deleted."""
-    with get_connection() as conn:
+    with connection_scope() as conn:
         conn.execute(
             "UPDATE shopping_list SET is_deleted = 1 WHERE is_checked_off = 1 AND is_active = 1"
         )
@@ -207,14 +207,14 @@ def clear_planned_store_ids_for_active_items(*, include_checked_off: bool = Fals
         sql = "UPDATE shopping_list SET planned_store_id = NULL WHERE is_active = 1 AND is_deleted = 0"
     else:
         sql = "UPDATE shopping_list SET planned_store_id = NULL WHERE is_active = 1 AND is_deleted = 0 AND is_checked_off = 0"
-    with get_connection() as conn:
+    with connection_scope() as conn:
         cur = conn.execute(sql)
         conn.commit()
         return int(cur.rowcount or 0)
 
 
 def set_planned_store_id(item_id: int, planned_store_id: Optional[int]) -> None:
-    with get_connection() as conn:
+    with connection_scope() as conn:
         conn.execute(
             "UPDATE shopping_list SET planned_store_id = ? WHERE id = ?",
             (int(planned_store_id) if planned_store_id is not None else None, int(item_id)),
@@ -234,7 +234,7 @@ def bulk_set_planned_store_ids(assignments: List[Tuple[int, Optional[int]]]) -> 
 
     rows = [(int(row_id), int(store_id) if store_id is not None else None) for (row_id, store_id) in assignments]
 
-    with get_connection() as conn:
+    with connection_scope() as conn:
         conn.executemany(
             "UPDATE shopping_list SET planned_store_id = ? WHERE id = ?",
             [(store_id, row_id) for (row_id, store_id) in rows],
@@ -273,7 +273,7 @@ def bulk_set_planned_store_ids_by_item_id(
     else:
         sql = "UPDATE shopping_list SET planned_store_id = ? WHERE item_id = ?"
 
-    with get_connection() as conn:
+    with connection_scope() as conn:
         cur = conn.executemany(sql, [(store_id, item_id) for item_id, store_id in rows])
         conn.commit()
         updated = int(cur.rowcount or 0)

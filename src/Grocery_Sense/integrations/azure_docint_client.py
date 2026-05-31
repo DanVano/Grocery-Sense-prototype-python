@@ -40,7 +40,7 @@ from azure.core.credentials import AzureKeyCredential
 from azure.core.exceptions import HttpResponseError, ServiceRequestError
 from rapidfuzz import fuzz, process
 
-from Grocery_Sense.data.connection import get_connection
+from Grocery_Sense.data.connection import connection_scope, get_connection
 from Grocery_Sense.data.repositories import items_repo as items_repo_module
 from Grocery_Sense.data.repositories.item_aliases_repo import ItemAliasesRepo
 from Grocery_Sense.data.repositories.stores_repo import create_store, list_stores
@@ -113,7 +113,7 @@ def _compute_file_sha256(file_path: str | Path, chunk_size: int = 1024 * 1024) -
 
 def _find_receipt_by_file_hash(file_hash: str) -> Optional[int]:
     _ensure_dedupe_tables()
-    with get_connection() as conn:
+    with connection_scope() as conn:
         row = conn.execute(
             "SELECT receipt_id FROM receipt_file_hashes WHERE file_hash = ?",
             (file_hash,),
@@ -123,7 +123,7 @@ def _find_receipt_by_file_hash(file_hash: str) -> Optional[int]:
 
 def _find_receipt_by_signature(signature: str) -> Optional[int]:
     _ensure_dedupe_tables()
-    with get_connection() as conn:
+    with connection_scope() as conn:
         row = conn.execute(
             "SELECT receipt_id FROM receipt_signatures WHERE signature = ?",
             (signature,),
@@ -133,7 +133,7 @@ def _find_receipt_by_signature(signature: str) -> Optional[int]:
 
 def _link_hash_to_receipt(file_hash: str, receipt_id: int, file_path: str) -> None:
     _ensure_dedupe_tables()
-    with get_connection() as conn:
+    with connection_scope() as conn:
         conn.execute(
             """
             INSERT OR REPLACE INTO receipt_file_hashes (file_hash, receipt_id, file_path, created_at)
@@ -146,7 +146,7 @@ def _link_hash_to_receipt(file_hash: str, receipt_id: int, file_path: str) -> No
 
 def _link_signature_to_receipt(signature: str, receipt_id: int) -> None:
     _ensure_dedupe_tables()
-    with get_connection() as conn:
+    with connection_scope() as conn:
         conn.execute(
             """
             INSERT OR REPLACE INTO receipt_signatures (signature, receipt_id, created_at)
@@ -164,7 +164,7 @@ def _delete_receipt_cascade(receipt_id: int) -> None:
     _ensure_ingest_tables()
     _ensure_dedupe_tables()
 
-    with get_connection() as conn:
+    with connection_scope() as conn:
         # child -> parent order
         conn.execute("DELETE FROM prices WHERE receipt_id = ?;", (int(receipt_id),))
         conn.execute("DELETE FROM receipt_line_items WHERE receipt_id = ?;", (int(receipt_id),))
@@ -435,7 +435,7 @@ def _insert_receipt_row(
     image_confidence_1_5: Optional[int],
     azure_request_id: str,
 ) -> int:
-    with get_connection() as conn:
+    with connection_scope() as conn:
         cur = conn.execute(
             """
             INSERT INTO receipts (
@@ -465,7 +465,7 @@ def _insert_receipt_row(
 
 
 def _save_raw_json_row(receipt_id: int, operation_id: str, json_path: Path, raw_json_dict: Dict[str, Any]) -> None:
-    with get_connection() as conn:
+    with connection_scope() as conn:
         conn.execute(
             """
             INSERT OR REPLACE INTO receipt_raw_json (receipt_id, operation_id, json_path, raw_json, created_at)
@@ -520,7 +520,7 @@ def _insert_price_point(
     Inserts into prices, including optional normalization fields.
     Unit normalization schema is ensured by UnitNormalizationService.ensure_schema().
     """
-    with get_connection() as conn:
+    with connection_scope() as conn:
         conn.execute(
             """
             INSERT INTO prices (
@@ -562,7 +562,7 @@ def _insert_receipt_line_item(
     discount: Optional[float],
     confidence_1_5: Optional[int],
 ) -> None:
-    with get_connection() as conn:
+    with connection_scope() as conn:
         conn.execute(
             """
             INSERT INTO receipt_line_items (
@@ -786,7 +786,7 @@ def ingest_analyzed_receipt_into_db(
     now_iso = _now_utc_iso()
     raw_json_str = json.dumps(analyze_result, ensure_ascii=False)
 
-    with get_connection() as conn:
+    with connection_scope() as conn:
         conn.execute("BEGIN;")
         try:
             cur = conn.execute(

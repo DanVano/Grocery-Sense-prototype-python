@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from Grocery_Sense.data.connection import get_connection
+from Grocery_Sense.data.connection import connection_scope, get_connection
 
 # -----------------------------------------------------------------------------
 # Helpers: hashing (used by ingest), phrase-safe matching (used by preferences)
@@ -181,7 +181,7 @@ class FlyersRepo:
     def ensure_schema(self) -> None:
         if getattr(self, "_schema_ready", False):
             return
-        with get_connection() as conn:
+        with connection_scope() as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS flyer_batches (
@@ -331,7 +331,7 @@ class FlyersRepo:
 
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
-        with get_connection() as conn:
+        with connection_scope() as conn:
             # stores.name has no UNIQUE constraint, so ON CONFLICT(name) would
             # raise — use SELECT-then-INSERT instead (single-user assumption).
             row = conn.execute("SELECT id FROM stores WHERE name = ?", (name,)).fetchone()
@@ -348,7 +348,7 @@ class FlyersRepo:
 
     def list_stores(self) -> List[StoreRow]:
         self.ensure_schema()
-        with get_connection() as conn:
+        with connection_scope() as conn:
             try:
                 rows = conn.execute("SELECT id, name FROM stores ORDER BY name ASC").fetchall()
             except Exception:
@@ -379,7 +379,7 @@ class FlyersRepo:
         self.ensure_schema()
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
-        with get_connection() as conn:
+        with connection_scope() as conn:
             conn.execute(
                 """
                 INSERT INTO flyer_batches (store_id, valid_from, valid_to, source_type, source_ref, note, status, imported_at)
@@ -415,7 +415,7 @@ class FlyersRepo:
 
     def set_batch_status(self, flyer_id: int, status: str) -> None:
         self.ensure_schema()
-        with get_connection() as conn:
+        with connection_scope() as conn:
             conn.execute("UPDATE flyer_batches SET status=? WHERE id=?", (status, int(flyer_id)))
             conn.commit()
 
@@ -429,7 +429,7 @@ class FlyersRepo:
     ) -> int:
         self.ensure_schema()
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        with get_connection() as conn:
+        with connection_scope() as conn:
             conn.execute(
                 """
                 INSERT INTO flyer_assets (flyer_id, asset_type, path, sha256, created_at)
@@ -450,7 +450,7 @@ class FlyersRepo:
     ) -> int:
         self.ensure_schema()
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        with get_connection() as conn:
+        with connection_scope() as conn:
             conn.execute(
                 """
                 INSERT INTO flyer_raw_json (flyer_id, sha256, json, created_at)
@@ -490,7 +490,7 @@ class FlyersRepo:
         self.ensure_schema()
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
-        with get_connection() as conn:
+        with connection_scope() as conn:
             conn.execute(
                 """
                 INSERT INTO flyer_deals (
@@ -604,7 +604,7 @@ class FlyersRepo:
             LIMIT ?
         """
 
-        with get_connection() as conn:
+        with connection_scope() as conn:
             conn.row_factory = sqlite3.Row
             try:
                 rows = conn.execute(sql_join, (int(flyer_id), int(limit))).fetchall()
@@ -698,7 +698,7 @@ class FlyersRepo:
         """
         args.append(int(limit))
 
-        with get_connection() as conn:
+        with connection_scope() as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(sql, args).fetchall()
 

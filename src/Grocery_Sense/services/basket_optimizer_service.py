@@ -665,7 +665,7 @@ class BasketOptimizerService:
           flyer_sources.valid_from/valid_to must include today
         """
         try:
-            from Grocery_Sense.data.connection import get_connection
+            from Grocery_Sense.data.connection import connection_scope
         except Exception:
             return {}
 
@@ -694,7 +694,7 @@ class BasketOptimizerService:
 
         out: Dict[Tuple[int, int], Tuple[float, str]] = {}
         try:
-            with get_connection() as conn:
+            with connection_scope() as conn:
                 rows = conn.execute(sql, (*stores, *items, today, today)).fetchall()
         except Exception:
             return {}

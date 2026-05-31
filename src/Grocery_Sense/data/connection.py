@@ -10,8 +10,9 @@ Stores the database inside src/pricebrain/data/db/
 from __future__ import annotations
 
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 # Name of the SQLite file
 DB_FILENAME = "grocery_sense.db"
@@ -84,6 +85,28 @@ def get_connection(base_dir: Optional[Path] = None) -> sqlite3.Connection:
         conn.execute("PRAGMA synchronous = NORMAL")
     _check_integrity(conn, db_path)
     return conn
+
+
+@contextmanager
+def connection_scope(base_dir: Optional[Path] = None) -> Iterator[sqlite3.Connection]:
+    """
+    Open a connection, commit on clean exit, roll back on error, and ALWAYS close.
+
+    Drop-in replacement for `with get_connection() as conn:`. The raw sqlite3
+    connection context manager commits/rolls-back but does NOT close the
+    connection, so bare `with get_connection() as conn:` leaks the handle until
+    GC. This wrapper preserves the commit-on-success / rollback-on-error
+    semantics and adds deterministic close.
+    """
+    conn = get_connection(base_dir)
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def reset_integrity_cache() -> None:

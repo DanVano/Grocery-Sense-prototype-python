@@ -5,7 +5,7 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from Grocery_Sense.data.connection import get_connection
+from Grocery_Sense.data.connection import connection_scope, get_connection
 
 
 def _now_utc_iso() -> str:
@@ -32,7 +32,7 @@ def list_recent_receipts(limit: int = 50, offset: int = 0) -> List[Dict[str, Any
     """
     ensure_receipt_support_tables()
 
-    with get_connection() as conn:
+    with connection_scope() as conn:
         rows = conn.execute(
             """
             SELECT
@@ -81,7 +81,7 @@ def list_recent_receipts(limit: int = 50, offset: int = 0) -> List[Dict[str, Any
 def get_receipt(receipt_id: int) -> Optional[Dict[str, Any]]:
     ensure_receipt_support_tables()
 
-    with get_connection() as conn:
+    with connection_scope() as conn:
         r = conn.execute(
             """
             SELECT
@@ -124,7 +124,7 @@ def get_receipt(receipt_id: int) -> Optional[Dict[str, Any]]:
 def list_receipt_line_items(receipt_id: int) -> List[Dict[str, Any]]:
     ensure_receipt_support_tables()
 
-    with get_connection() as conn:
+    with connection_scope() as conn:
         rows = conn.execute(
             """
             SELECT
@@ -171,7 +171,7 @@ def get_receipt_raw_json(receipt_id: int) -> Tuple[Optional[str], Optional[str]]
     """
     ensure_receipt_support_tables()
 
-    with get_connection() as conn:
+    with connection_scope() as conn:
         row = conn.execute(
             """
             SELECT raw_json, json_path
@@ -197,7 +197,7 @@ def delete_receipt_cascade(receipt_id: int) -> None:
     """
     ensure_receipt_support_tables()
 
-    with get_connection() as conn:
+    with connection_scope() as conn:
         # Child -> parent order
         conn.execute("DELETE FROM prices WHERE receipt_id = ?;", (int(receipt_id),))
         conn.execute("DELETE FROM receipt_line_items WHERE receipt_id = ?;", (int(receipt_id),))
@@ -221,7 +221,7 @@ def delete_receipt_with_backup(receipt_id: int) -> int:
 
     backup_json = json.dumps(snapshot, ensure_ascii=False)
 
-    with get_connection() as conn:
+    with connection_scope() as conn:
         cur = conn.execute(
             """
             INSERT INTO deleted_receipt_backups (original_receipt_id, deleted_at, backup_json)
@@ -257,7 +257,7 @@ def restore_receipt_from_backup(backup_id: int) -> Tuple[int, List[Tuple[str, st
     """
     ensure_receipt_support_tables()
 
-    with get_connection() as conn:
+    with connection_scope() as conn:
         row = conn.execute(
             "SELECT backup_json FROM deleted_receipt_backups WHERE id = ?;",
             (int(backup_id),),
@@ -281,7 +281,7 @@ def restore_receipt_from_backup(backup_id: int) -> Tuple[int, List[Tuple[str, st
     rec = snapshot["receipt"]
     conflicts: List[Tuple[str, str]] = []
 
-    with get_connection() as conn:
+    with connection_scope() as conn:
         conn.execute("BEGIN;")
         try:
             cur = conn.execute(
@@ -425,7 +425,7 @@ def restore_receipt_from_backup(backup_id: int) -> Tuple[int, List[Tuple[str, st
 
 def list_deleted_backups(limit: int = 25) -> List[Dict[str, Any]]:
     ensure_receipt_support_tables()
-    with get_connection() as conn:
+    with connection_scope() as conn:
         rows = conn.execute(
             """
             SELECT id, original_receipt_id, deleted_at
@@ -450,7 +450,7 @@ def _snapshot_receipt(receipt_id: int) -> Optional[Dict[str, Any]]:
     """
     Snapshot receipt + derived tables into a JSON-able structure.
     """
-    with get_connection() as conn:
+    with connection_scope() as conn:
         rec = conn.execute(
             """
             SELECT

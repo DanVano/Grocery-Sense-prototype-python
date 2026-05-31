@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from Grocery_Sense.data.connection import get_connection
+from Grocery_Sense.data.connection import connection_scope, get_connection
 
 
 def _now_utc_iso() -> str:
@@ -59,12 +59,12 @@ class ItemsAdminRepo:
     def _col_exists(self, table: str, col: str) -> bool:
         if table not in _ALLOWED_PRAGMA_TABLES:
             raise ValueError(f"Disallowed table for PRAGMA: {table}")
-        with get_connection() as conn:
+        with connection_scope() as conn:
             rows = conn.execute(f"PRAGMA table_info({table});").fetchall()
         return any(r[1] == col for r in rows)
 
     def _ensure_items_columns(self) -> None:
-        with get_connection() as conn:
+        with connection_scope() as conn:
             # items.is_tracked
             if not self._col_exists("items", "is_tracked"):
                 conn.execute("ALTER TABLE items ADD COLUMN is_tracked INTEGER NOT NULL DEFAULT 0;")
@@ -112,7 +112,7 @@ class ItemsAdminRepo:
         """
         params.append(int(limit))
 
-        with get_connection() as conn:
+        with connection_scope() as conn:
             rows = conn.execute(sql, tuple(params)).fetchall()
 
         out: List[ItemRow] = []
@@ -131,7 +131,7 @@ class ItemsAdminRepo:
 
     def get_item(self, item_id: int) -> Optional[Dict[str, Any]]:
         self.ensure_schema()
-        with get_connection() as conn:
+        with connection_scope() as conn:
             r = conn.execute(
                 """
                 SELECT id, canonical_name, COALESCE(is_tracked,0), default_unit
@@ -155,7 +155,7 @@ class ItemsAdminRepo:
 
     def toggle_tracked(self, item_id: int) -> int:
         self.ensure_schema()
-        with get_connection() as conn:
+        with connection_scope() as conn:
             cur = conn.execute("SELECT COALESCE(is_tracked,0) FROM items WHERE id=?;", (int(item_id),)).fetchone()
             if not cur:
                 raise ValueError(f"Item not found: {item_id}")
@@ -170,7 +170,7 @@ class ItemsAdminRepo:
         if unit is not None and unit not in VALID_UNITS:
             raise ValueError(f"Invalid unit: {unit} (allowed: {', '.join(VALID_UNITS)})")
 
-        with get_connection() as conn:
+        with connection_scope() as conn:
             conn.execute("UPDATE items SET default_unit=? WHERE id=?;", (unit, int(item_id)))
             conn.commit()
 
@@ -180,7 +180,7 @@ class ItemsAdminRepo:
         if not name:
             raise ValueError("New name cannot be empty.")
 
-        with get_connection() as conn:
+        with connection_scope() as conn:
             conn.execute("UPDATE items SET canonical_name=? WHERE id=?;", (name, int(item_id)))
             conn.commit()
 
@@ -206,7 +206,7 @@ class ItemsAdminRepo:
         if int(target_item_id) == int(source_item_id):
             raise ValueError("Target and source item are the same.")
 
-        with get_connection() as conn:
+        with connection_scope() as conn:
             conn.execute("BEGIN;")
             try:
                 t = conn.execute(
