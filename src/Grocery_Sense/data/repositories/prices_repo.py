@@ -265,6 +265,7 @@ def list_unit_prices(
         "FROM prices",
         "WHERE item_id = ?",
         "  AND unit_price IS NOT NULL",
+        "  AND unit_price > 0",
         "  AND date(COALESCE(date, created_at)) >= date('now', ?)",
     ]
     params: List[Any] = [int(item_id), _since_clause(since_days)]
@@ -338,6 +339,7 @@ def get_six_month_low_unit_price(
         "FROM prices",
         "WHERE item_id = ?",
         "  AND unit_price IS NOT NULL",
+        "  AND unit_price > 0",
         "  AND date(COALESCE(date, created_at)) >= date('now', ?)",
     ]
     params: List[Any] = [int(item_id), _since_clause(since_days)]
@@ -370,6 +372,7 @@ def get_last_seen_at_or_below(
         "FROM prices",
         "WHERE item_id = ?",
         "  AND unit_price IS NOT NULL",
+        "  AND unit_price > 0",
         "  AND unit_price <= ?",
         "  AND date(COALESCE(date, created_at)) >= date('now', ?)",
     ]
