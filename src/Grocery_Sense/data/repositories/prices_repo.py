@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import closing
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Iterable, List, Optional, Tuple, Dict, Any
 
 from Grocery_Sense.data.connection import get_connection
@@ -86,13 +86,17 @@ def get_prices_for_item(
     (DESC + LIMIT) and reverses them so the caller still sees ASC order
     — preserving the no-limit contract.
     """
+    # Compare the stored ISO date directly (no date() wrapper) so the
+    # idx_prices_item_date / idx_prices_item_store_date indexes can serve the
+    # range. Dates are zero-padded YYYY-MM-DD, so lexical >= is chronological >=.
+    cutoff = (datetime.now(timezone.utc).date() - timedelta(days=int(since_days))).isoformat()
     sql = """
         SELECT id, item_id, store_id, receipt_id, flyer_source_id, source, date,
                unit_price, unit, quantity, total_price, raw_name, confidence
         FROM prices
-        WHERE item_id = ? AND date(date) >= date('now', ?)
+        WHERE item_id = ? AND date >= ?
     """
-    params: List[Any] = [item_id, f"-{int(since_days)} days"]
+    params: List[Any] = [item_id, cutoff]
 
     if store_id is not None:
         sql += " AND store_id = ?"
@@ -175,12 +179,13 @@ def get_price_stats_for_item(item_id: int, store_id: Optional[int] = None, since
     """
     Returns basic stats for an item's price history. Computed via SQL aggregate.
     """
+    cutoff = (datetime.now(timezone.utc).date() - timedelta(days=int(since_days))).isoformat()
     sql = (
         "SELECT MIN(unit_price), MAX(unit_price), AVG(unit_price), COUNT(*) "
         "FROM prices "
-        "WHERE item_id = ? AND date(date) >= date('now', ?) AND unit_price IS NOT NULL"
+        "WHERE item_id = ? AND date >= ? AND unit_price IS NOT NULL"
     )
-    params: List[Any] = [int(item_id), f"-{int(since_days)} days"]
+    params: List[Any] = [int(item_id), cutoff]
     if store_id is not None:
         sql += " AND store_id = ?"
         params.append(int(store_id))
