@@ -220,6 +220,12 @@ def delete_receipt_with_backup(receipt_id: int) -> int:
         raise ValueError(f"Receipt not found: {receipt_id}")
 
     backup_json = json.dumps(snapshot, ensure_ascii=False)
+    # Write-time cap: if the snapshot (dominated by the OCR raw_json) exceeds the
+    # restore limit, drop the heavy blob so the backup stays restorable. Structured
+    # rows (line items / prices) are still preserved.
+    if len(backup_json) > _MAX_BACKUP_BYTES:
+        snapshot["raw_json"] = None
+        backup_json = json.dumps(snapshot, ensure_ascii=False)
 
     with connection_scope() as conn:
         cur = conn.execute(
@@ -238,12 +244,23 @@ def delete_receipt_with_backup(receipt_id: int) -> int:
         conn.execute("DELETE FROM receipt_file_hashes WHERE receipt_id = ?;", (int(receipt_id),))
         conn.execute("DELETE FROM receipt_signatures WHERE receipt_id = ?;", (int(receipt_id),))
         conn.execute("DELETE FROM receipts WHERE id = ?;", (int(receipt_id),))
+
+        # Retention: keep only the newest _MAX_BACKUPS_KEPT undo snapshots so the
+        # backup table (which embeds full OCR JSON) doesn't grow unbounded. Runs in
+        # the same transaction; the row just inserted has the highest id and is kept.
+        conn.execute(
+            "DELETE FROM deleted_receipt_backups WHERE id NOT IN ("
+            "SELECT id FROM deleted_receipt_backups ORDER BY id DESC LIMIT ?)",
+            (_MAX_BACKUPS_KEPT,),
+        )
         conn.commit()
 
     return backup_id
 
 
 _MAX_BACKUP_BYTES = 50 * 1024 * 1024
+# Keep only the most recent N undo snapshots (each may embed full OCR raw_json).
+_MAX_BACKUPS_KEPT = 50
 
 
 def restore_receipt_from_backup(backup_id: int) -> Tuple[int, List[Tuple[str, str]]]:
