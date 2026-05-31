@@ -1,0 +1,1 @@
+{"nodes": [{"id": "duplicate_receipt_fixture", "label": "Duplicate Receipt (Azure DocInt sample)", "file_type": "document", "source_file": "tests/fixtures/azure_receipt_samples/duplicate_receipt.json", "source_location": null, "source_url": null, "captured_at": null, "author": null, "contributor": null}], "edges": [], "hyperedges": []}

@@ -1,0 +1,542 @@
+{
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\conftest.py": {
+    "mtime": 1780133277.9907646,
+    "ast_hash": "698d0372e912f88e2ca0af396419cfa2",
+    "semantic_hash": "698d0372e912f88e2ca0af396419cfa2"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\main.py": {
+    "mtime": 1776229192.058707,
+    "ast_hash": "6ad15c431c7e468c2359bb5e814b61f1",
+    "semantic_hash": "6ad15c431c7e468c2359bb5e814b61f1"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\__init__.py": {
+    "mtime": 1766627863.1835053,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\config\\config_store.py": {
+    "mtime": 1780135567.8555293,
+    "ast_hash": "5c27f4d647ff2276f39c4eb007719714",
+    "semantic_hash": "5c27f4d647ff2276f39c4eb007719714"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\config\\__init__.py": {
+    "mtime": 1766629604.3710473,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\data\\connection.py": {
+    "mtime": 1780133174.3600678,
+    "ast_hash": "e80e01a9abdadb3016e42ed844acaf89",
+    "semantic_hash": "e80e01a9abdadb3016e42ed844acaf89"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\data\\schema.py": {
+    "mtime": 1780133658.4561768,
+    "ast_hash": "926bef7e658d63a7644ed270514e8a3c",
+    "semantic_hash": "926bef7e658d63a7644ed270514e8a3c"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\data\\__init__.py": {
+    "mtime": 1766627890.5298922,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\data\\repositories\\flyers_repo.py": {
+    "mtime": 1780165191.6062462,
+    "ast_hash": "9ba234fc6541a8ce7e2730dfc95ac2d8",
+    "semantic_hash": "9ba234fc6541a8ce7e2730dfc95ac2d8"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\data\\repositories\\items_admin_repo.py": {
+    "mtime": 1780134029.218468,
+    "ast_hash": "dab4cbfec6284db61e5224cec088283f",
+    "semantic_hash": "dab4cbfec6284db61e5224cec088283f"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\data\\repositories\\items_repo.py": {
+    "mtime": 1780165099.6824195,
+    "ast_hash": "9b4cd5f86a89d6778aa1f1e99e7c1ed3",
+    "semantic_hash": "9b4cd5f86a89d6778aa1f1e99e7c1ed3"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\data\\repositories\\item_aliases_repo.py": {
+    "mtime": 1780134056.5149934,
+    "ast_hash": "2cae6351a3581add3afe7aabaf75adca",
+    "semantic_hash": "2cae6351a3581add3afe7aabaf75adca"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\data\\repositories\\prices_repo.py": {
+    "mtime": 1780164713.2607958,
+    "ast_hash": "ade849e6cd02b45587d2f57989c3b13e",
+    "semantic_hash": "ade849e6cd02b45587d2f57989c3b13e"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\data\\repositories\\receipts_repo.py": {
+    "mtime": 1780134607.7153666,
+    "ast_hash": "9a57ed683aba510d01e0445f7822de6d",
+    "semantic_hash": "9a57ed683aba510d01e0445f7822de6d"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\data\\repositories\\shopping_list_repo.py": {
+    "mtime": 1780134645.9882703,
+    "ast_hash": "cfb591f3e58fcb82842745df4f5d891c",
+    "semantic_hash": "cfb591f3e58fcb82842745df4f5d891c"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\data\\repositories\\stores_repo.py": {
+    "mtime": 1780165157.21069,
+    "ast_hash": "5f1e88448ab2654115d7f4ca8774ed98",
+    "semantic_hash": "5f1e88448ab2654115d7f4ca8774ed98"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\data\\repositories\\__init__.py": {
+    "mtime": 1766624795.9163795,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\domain\\models.py": {
+    "mtime": 1776140699.1201751,
+    "ast_hash": "f2d41922d36ffc41e0e14871be312d41",
+    "semantic_hash": "f2d41922d36ffc41e0e14871be312d41"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\domain\\__init__.py": {
+    "mtime": 1766624795.924407,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\integrations\\azure_docint_client.py": {
+    "mtime": 1780135448.7409093,
+    "ast_hash": "42db4a642bb38ed093ae5603a81fd3d7",
+    "semantic_hash": "42db4a642bb38ed093ae5603a81fd3d7"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\integrations\\flipp_client.py": {
+    "mtime": 1775712100.0006354,
+    "ast_hash": "7ab9cf5d5e025b4d7ad813efda5c175a",
+    "semantic_hash": "7ab9cf5d5e025b4d7ad813efda5c175a"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\integrations\\flyer_docint_client.py": {
+    "mtime": 1766625372.2234137,
+    "ast_hash": "c51c323cbd8820557b47b1b5af36b2fa",
+    "semantic_hash": "c51c323cbd8820557b47b1b5af36b2fa"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\integrations\\__init__.py": {
+    "mtime": 1766624795.9359393,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\recipes\\recipe_engine.py": {
+    "mtime": 1780164636.1646304,
+    "ast_hash": "ef06e690b4a9be0a0fbb2532b813eab1",
+    "semantic_hash": "ef06e690b4a9be0a0fbb2532b813eab1"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\services\\basket_optimizer_service.py": {
+    "mtime": 1780165139.552209,
+    "ast_hash": "3ffca38d8e0e28bc59da77fe9c3493bb",
+    "semantic_hash": "3ffca38d8e0e28bc59da77fe9c3493bb"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\services\\deals_service.py": {
+    "mtime": 1780134996.8316836,
+    "ast_hash": "54e43f825c10692c4235450f2377bee7",
+    "semantic_hash": "54e43f825c10692c4235450f2377bee7"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\services\\demo_seed_service.py": {
+    "mtime": 1780165124.5915956,
+    "ast_hash": "2be6250f176044d95a54548eab0ed864",
+    "semantic_hash": "2be6250f176044d95a54548eab0ed864"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\services\\flyer_ingest_service.py": {
+    "mtime": 1780134983.2982051,
+    "ast_hash": "6dcc211d68365c8e0dbb74429f909d45",
+    "semantic_hash": "6dcc211d68365c8e0dbb74429f909d45"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\services\\flyer_sync_scheduler.py": {
+    "mtime": 1780165009.179546,
+    "ast_hash": "1c5d6076df41a85e16dcb4991d2fd46c",
+    "semantic_hash": "1c5d6076df41a85e16dcb4991d2fd46c"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\services\\flyer_sync_service.py": {
+    "mtime": 1780135580.6510353,
+    "ast_hash": "c29e1737f8120e841a5fcfdc96dbb43b",
+    "semantic_hash": "c29e1737f8120e841a5fcfdc96dbb43b"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\services\\ingredient_mapping_service.py": {
+    "mtime": 1766628538.9819825,
+    "ast_hash": "5a267dd897e57d54db1bb598996e154a",
+    "semantic_hash": "5a267dd897e57d54db1bb598996e154a"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\services\\meal_suggestion_service.py": {
+    "mtime": 1780164656.7437942,
+    "ast_hash": "7323a70953845d142760136309feeb64",
+    "semantic_hash": "7323a70953845d142760136309feeb64"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\services\\multibuy_deal_service.py": {
+    "mtime": 1780134844.9836686,
+    "ast_hash": "1160347f6423363c43878fa2c5658b7b",
+    "semantic_hash": "1160347f6423363c43878fa2c5658b7b"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\services\\planning_service.py": {
+    "mtime": 1780164735.7129073,
+    "ast_hash": "417af5a50db8f58025a2fedf41358f4b",
+    "semantic_hash": "417af5a50db8f58025a2fedf41358f4b"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\services\\preferences_service.py": {
+    "mtime": 1780135607.875937,
+    "ast_hash": "d91c0ae05b13d9ffd1996dcbc81a4eee",
+    "semantic_hash": "d91c0ae05b13d9ffd1996dcbc81a4eee"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\services\\price_drop_alert_service.py": {
+    "mtime": 1780135118.4804182,
+    "ast_hash": "4908fe31c9604db45baa7dc2ccaf6286",
+    "semantic_hash": "4908fe31c9604db45baa7dc2ccaf6286"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\services\\price_history_service.py": {
+    "mtime": 1776805517.5023084,
+    "ast_hash": "ae9ed5402a8342ff48f419766bb72ad9",
+    "semantic_hash": "ae9ed5402a8342ff48f419766bb72ad9"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\services\\shopping_list_service.py": {
+    "mtime": 1780133964.2058668,
+    "ast_hash": "f6cc87ef21942412ddbbd44724c38578",
+    "semantic_hash": "f6cc87ef21942412ddbbd44724c38578"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\services\\unit_normalization_service.py": {
+    "mtime": 1780135641.0164578,
+    "ast_hash": "a6cef178641286838391a8f04193945c",
+    "semantic_hash": "a6cef178641286838391a8f04193945c"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\services\\weekly_planner_service.py": {
+    "mtime": 1780134234.114673,
+    "ast_hash": "a3065b3f9273d761c80f5241181ff45b",
+    "semantic_hash": "a3065b3f9273d761c80f5241181ff45b"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\services\\__init__.py": {
+    "mtime": 1766624795.9705484,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\ui\\basket_optimizer_window.py": {
+    "mtime": 1775712072.1316369,
+    "ast_hash": "2143bdd45fbea0a66b8f0c4fede1d07e",
+    "semantic_hash": "2143bdd45fbea0a66b8f0c4fede1d07e"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\ui\\deal_feed_window.py": {
+    "mtime": 1776741959.789636,
+    "ast_hash": "ab21d4b11de1aa56561b8989a45e1e0c",
+    "semantic_hash": "ab21d4b11de1aa56561b8989a45e1e0c"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\ui\\flyer_import_window.py": {
+    "mtime": 1780164988.97086,
+    "ast_hash": "e756c587ef0316f0cafc1a86073fd7b7",
+    "semantic_hash": "e756c587ef0316f0cafc1a86073fd7b7"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\ui\\item_manager_window.py": {
+    "mtime": 1766627963.1504843,
+    "ast_hash": "648362bef9fa487d123e99ec6baa1edb",
+    "semantic_hash": "648362bef9fa487d123e99ec6baa1edb"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\ui\\preferences_wizard_window.py": {
+    "mtime": 1776808233.21559,
+    "ast_hash": "5cf88e824c9583efcdc2aedaca42ed70",
+    "semantic_hash": "5cf88e824c9583efcdc2aedaca42ed70"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\ui\\preference_window.py": {
+    "mtime": 1776807634.1659005,
+    "ast_hash": "bfb7acb9eebe1b6fc842dd931cee1b99",
+    "semantic_hash": "bfb7acb9eebe1b6fc842dd931cee1b99"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\ui\\price_drop_alerts_window.py": {
+    "mtime": 1776140748.0610268,
+    "ast_hash": "89820b551d390c6e86e92902de2b767c",
+    "semantic_hash": "89820b551d390c6e86e92902de2b767c"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\ui\\price_history_window.py": {
+    "mtime": 1776805558.7672293,
+    "ast_hash": "b8b605b03ba08a3a260dcb418c4a0826",
+    "semantic_hash": "b8b605b03ba08a3a260dcb418c4a0826"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\ui\\receipt_browser_window.py": {
+    "mtime": 1780134130.3579354,
+    "ast_hash": "158b025cc1bded04f65bcad49c42c70b",
+    "semantic_hash": "158b025cc1bded04f65bcad49c42c70b"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\ui\\receipt_import_window.py": {
+    "mtime": 1780164605.8188295,
+    "ast_hash": "f090f847e9125cafac4bb9384ade90a3",
+    "semantic_hash": "f090f847e9125cafac4bb9384ade90a3"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\ui\\store_plan_window.py": {
+    "mtime": 1766627963.144142,
+    "ast_hash": "a1b5f1438ec7f2621a0c7a5f2d87bf4f",
+    "semantic_hash": "a1b5f1438ec7f2621a0c7a5f2d87bf4f"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\ui\\tk_main.py": {
+    "mtime": 1780165020.1512115,
+    "ast_hash": "e68f267d59a3e679f5451f1c81a31923",
+    "semantic_hash": "e68f267d59a3e679f5451f1c81a31923"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\src\\Grocery_Sense\\ui\\__init__.py": {
+    "mtime": 1766624795.9921062,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\fixtures\\alias_ambiguity.json": {
+    "mtime": 1776921892.7574787,
+    "ast_hash": "76fed9f8182ae707fc827072da77afe3",
+    "semantic_hash": "76fed9f8182ae707fc827072da77afe3"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\fixtures\\multibuy_phrases.json": {
+    "mtime": 1776906142.6232116,
+    "ast_hash": "22add79246383c2a4acdcb77d4db954f",
+    "semantic_hash": "22add79246383c2a4acdcb77d4db954f"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\fixtures\\recipes_sample.json": {
+    "mtime": 1776926070.0756712,
+    "ast_hash": "ffea4813e42c61e17acab4e3ac47a0c0",
+    "semantic_hash": "ffea4813e42c61e17acab4e3ac47a0c0"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\fixtures\\azure_receipt_samples\\basic_receipt.json": {
+    "mtime": 1776991978.8669803,
+    "ast_hash": "b556e534a146d92f552189b9ff2e6b92",
+    "semantic_hash": "b556e534a146d92f552189b9ff2e6b92"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\fixtures\\azure_receipt_samples\\duplicate_receipt.json": {
+    "mtime": 1776991980.723428,
+    "ast_hash": "ac0b033bb001d08a6bb53a5a01dcbcdb",
+    "semantic_hash": "ac0b033bb001d08a6bb53a5a01dcbcdb"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\fixtures\\azure_receipt_samples\\minimal_receipt.json": {
+    "mtime": 1776991981.7492306,
+    "ast_hash": "a2cc4b0169d47c965c7a3a1eca2ee773",
+    "semantic_hash": "a2cc4b0169d47c965c7a3a1eca2ee773"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\fixtures\\flyer_samples\\azure_layout_simple.json": {
+    "mtime": 1776921880.5904393,
+    "ast_hash": "f336c7259e865c88ba71ebc0e106c1ff",
+    "semantic_hash": "f336c7259e865c88ba71ebc0e106c1ff"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\fixtures\\flyer_samples\\dealrecords_simple.json": {
+    "mtime": 1776921883.2741313,
+    "ast_hash": "dd4627a7511e95b91284fbcd6bd538fc",
+    "semantic_hash": "dd4627a7511e95b91284fbcd6bd538fc"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\ingestion\\test_flyer_ingest.py": {
+    "mtime": 1777042400.56276,
+    "ast_hash": "b5c4cc51d8700512d5e672066a88e658",
+    "semantic_hash": "b5c4cc51d8700512d5e672066a88e658"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\ingestion\\test_flyer_sync.py": {
+    "mtime": 1777042894.0606458,
+    "ast_hash": "e6f91462ab7615549ad97cb37147c57f",
+    "semantic_hash": "e6f91462ab7615549ad97cb37147c57f"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\ingestion\\test_flyer_sync_scheduler.py": {
+    "mtime": 1776924398.2717373,
+    "ast_hash": "4e566c4f2797f5adc64a504db92e579f",
+    "semantic_hash": "4e566c4f2797f5adc64a504db92e579f"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\ingestion\\test_ingredient_mapping.py": {
+    "mtime": 1777009379.29918,
+    "ast_hash": "0a534cbf5f845f5d1b4ba39a514f30fc",
+    "semantic_hash": "0a534cbf5f845f5d1b4ba39a514f30fc"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\ingestion\\__init__.py": {
+    "mtime": 1776921893.7941608,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\integrations\\test_azure_docint_dedupe.py": {
+    "mtime": 1777009358.9310293,
+    "ast_hash": "dfa7bede0b2bf4ef02f2c4a8d491a090",
+    "semantic_hash": "dfa7bede0b2bf4ef02f2c4a8d491a090"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\integrations\\test_azure_docint_helpers.py": {
+    "mtime": 1780135306.958995,
+    "ast_hash": "5f3cbb709734b78122cf9c4eeafd9239",
+    "semantic_hash": "5f3cbb709734b78122cf9c4eeafd9239"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\integrations\\test_azure_docint_ingest.py": {
+    "mtime": 1776993416.174575,
+    "ast_hash": "ea222eaf8ede39cb93e040ddb6e611f8",
+    "semantic_hash": "ea222eaf8ede39cb93e040ddb6e611f8"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\integrations\\test_azure_receipt_client.py": {
+    "mtime": 1776992150.84736,
+    "ast_hash": "70fab40c6f9202f26710acee640121ca",
+    "semantic_hash": "70fab40c6f9202f26710acee640121ca"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\integrations\\test_flipp_client.py": {
+    "mtime": 1776991998.2329714,
+    "ast_hash": "ec1269fee2f3a0598d7fabf70c4d1195",
+    "semantic_hash": "ec1269fee2f3a0598d7fabf70c4d1195"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\integrations\\test_flyer_docint_client.py": {
+    "mtime": 1776992030.9302614,
+    "ast_hash": "09481b6eb2828e33edced7810b2d9033",
+    "semantic_hash": "09481b6eb2828e33edced7810b2d9033"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\integrations\\__init__.py": {
+    "mtime": 1776991982.7688339,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\persistence\\test_connection.py": {
+    "mtime": 1777009310.283469,
+    "ast_hash": "37133b55f371e7a1117df96f82f69079",
+    "semantic_hash": "37133b55f371e7a1117df96f82f69079"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\persistence\\test_fk_behavior.py": {
+    "mtime": 1777009344.4260528,
+    "ast_hash": "932ec7c559f8142855a10726d76b1af6",
+    "semantic_hash": "932ec7c559f8142855a10726d76b1af6"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\persistence\\test_items_admin_repo.py": {
+    "mtime": 1776988474.027689,
+    "ast_hash": "ac2d15ca6ac1072fe567ebc2304d7266",
+    "semantic_hash": "ac2d15ca6ac1072fe567ebc2304d7266"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\persistence\\test_items_repo.py": {
+    "mtime": 1776988423.1814132,
+    "ast_hash": "93b274dba518f62facefbe51aa2bf954",
+    "semantic_hash": "93b274dba518f62facefbe51aa2bf954"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\persistence\\test_prices_repo.py": {
+    "mtime": 1776988573.748396,
+    "ast_hash": "52b63fe9449cab75f533ef2461b21598",
+    "semantic_hash": "52b63fe9449cab75f533ef2461b21598"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\persistence\\test_receipts_repo.py": {
+    "mtime": 1780134139.758886,
+    "ast_hash": "5ebd06259dc8dad6bca3861678be47ae",
+    "semantic_hash": "5ebd06259dc8dad6bca3861678be47ae"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\persistence\\test_schema.py": {
+    "mtime": 1776954047.8984022,
+    "ast_hash": "f17c756b0f4392871c2665c8b90cf194",
+    "semantic_hash": "f17c756b0f4392871c2665c8b90cf194"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\persistence\\test_shopping_list_repo.py": {
+    "mtime": 1777042102.4369154,
+    "ast_hash": "8cec69463699b8f0de44fc8943498637",
+    "semantic_hash": "8cec69463699b8f0de44fc8943498637"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\persistence\\test_stores_repo.py": {
+    "mtime": 1776954797.4714222,
+    "ast_hash": "c816f6f4c2f2352af563352a47b3c6ca",
+    "semantic_hash": "c816f6f4c2f2352af563352a47b3c6ca"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\persistence\\__init__.py": {
+    "mtime": 1776954020.8310406,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\planning\\test_basket_optimizer.py": {
+    "mtime": 1776953410.8208375,
+    "ast_hash": "71db3d757815a0b42d0717f0c8cd4230",
+    "semantic_hash": "71db3d757815a0b42d0717f0c8cd4230"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\planning\\test_end_to_end_smoke.py": {
+    "mtime": 1776953480.466315,
+    "ast_hash": "7f3424ff10d0a7ba523fec94befdd246",
+    "semantic_hash": "7f3424ff10d0a7ba523fec94befdd246"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\planning\\test_meal_suggestion.py": {
+    "mtime": 1780135320.4578667,
+    "ast_hash": "539288f23da948f7ab3f120ea32e4685",
+    "semantic_hash": "539288f23da948f7ab3f120ea32e4685"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\planning\\test_planning_service.py": {
+    "mtime": 1776927874.0982323,
+    "ast_hash": "670ab0ccbd072ff022c85fd1fee7c715",
+    "semantic_hash": "670ab0ccbd072ff022c85fd1fee7c715"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\planning\\test_recipe_engine.py": {
+    "mtime": 1780164881.0210836,
+    "ast_hash": "b1461fdc8ca2cbc1b37461720a9dfdeb",
+    "semantic_hash": "b1461fdc8ca2cbc1b37461720a9dfdeb"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\planning\\test_shopping_list_service.py": {
+    "mtime": 1777009872.3501809,
+    "ast_hash": "005e8dc4e9ca20f1e0335ea22c32ad14",
+    "semantic_hash": "005e8dc4e9ca20f1e0335ea22c32ad14"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\planning\\test_weekly_planner.py": {
+    "mtime": 1776926650.122311,
+    "ast_hash": "ec812242a2b4ab675047ec271f1efd08",
+    "semantic_hash": "ec812242a2b4ab675047ec271f1efd08"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\planning\\__init__.py": {
+    "mtime": 1776925929.969593,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\preferences\\conftest.py": {
+    "mtime": 1780164806.2546282,
+    "ast_hash": "7470ad44d682f64963dfd887284aba7d",
+    "semantic_hash": "7470ad44d682f64963dfd887284aba7d"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\preferences\\test_config_store.py": {
+    "mtime": 1777007676.6945786,
+    "ast_hash": "a02b22560ee26898979d8753658dae91",
+    "semantic_hash": "a02b22560ee26898979d8753658dae91"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\preferences\\test_demo_seed_service.py": {
+    "mtime": 1777008520.7380998,
+    "ast_hash": "736ec5c64e76e1816a66059a7c0f5dd9",
+    "semantic_hash": "736ec5c64e76e1816a66059a7c0f5dd9"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\preferences\\test_preferences_service.py": {
+    "mtime": 1777008307.496711,
+    "ast_hash": "ed0b4ca010e79f48cc355e6cca2fc377",
+    "semantic_hash": "ed0b4ca010e79f48cc355e6cca2fc377"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\preferences\\__init__.py": {
+    "mtime": 1777007512.3409357,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\price_intelligence\\test_deals_service.py": {
+    "mtime": 1776907056.7571368,
+    "ast_hash": "b8607568088085a21a46529132946c6d",
+    "semantic_hash": "b8607568088085a21a46529132946c6d"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\price_intelligence\\test_multibuy_parser.py": {
+    "mtime": 1776906298.3023257,
+    "ast_hash": "e64951876fcf664a546357b4656c7c0d",
+    "semantic_hash": "e64951876fcf664a546357b4656c7c0d"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\price_intelligence\\test_price_drop_alerts.py": {
+    "mtime": 1780133864.0710888,
+    "ast_hash": "610cac89f70af98cac2e53884e820716",
+    "semantic_hash": "610cac89f70af98cac2e53884e820716"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\price_intelligence\\test_price_history.py": {
+    "mtime": 1776906576.189496,
+    "ast_hash": "e521506d0bf998f29638151d3ca550ab",
+    "semantic_hash": "e521506d0bf998f29638151d3ca550ab"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\price_intelligence\\test_unit_normalization.py": {
+    "mtime": 1776906198.386575,
+    "ast_hash": "4c63804622b1a706838117e77df1c477",
+    "semantic_hash": "4c63804622b1a706838117e77df1c477"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\tests\\price_intelligence\\__init__.py": {
+    "mtime": 1776906151.8279681,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\test_receipt\\JSON\\No Frills 18.56.46.jpeg.json": {
+    "mtime": 1765953433.9634929,
+    "ast_hash": "1ab765af311255679897f86a20ba39b8",
+    "semantic_hash": "1ab765af311255679897f86a20ba39b8"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\CLAUDE.md": {
+    "mtime": 1776903928.1423326,
+    "ast_hash": "4ba0c73e1f0bd4ea1caa2bfc57b1aaa3",
+    "semantic_hash": "4ba0c73e1f0bd4ea1caa2bfc57b1aaa3"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\module_breakdown.md": {
+    "mtime": 1776905916.3560555,
+    "ast_hash": "034ea863f275c1f035eb1275faae456d",
+    "semantic_hash": "034ea863f275c1f035eb1275faae456d"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\requirements.txt": {
+    "mtime": 1766622740.848685,
+    "ast_hash": "45cca243d1d360b038f29c242457a681",
+    "semantic_hash": "45cca243d1d360b038f29c242457a681"
+  },
+  "C:\\Users\\skftw\\Desktop\\Coding\\Grocery-Sense-Prototype-Python\\test_receipt\\WhatsApp Image 2025-12-16 at 18.56.46.jpeg": {
+    "mtime": 1765940349.8808346,
+    "ast_hash": "c90be335b8846654ebc106cc340926d7",
+    "semantic_hash": "c90be335b8846654ebc106cc340926d7"
+  }
+}
