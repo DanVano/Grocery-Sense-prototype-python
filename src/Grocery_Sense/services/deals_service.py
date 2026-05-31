@@ -14,6 +14,7 @@ Later we can plug in the DB-backed items & price history.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -271,6 +272,17 @@ def search_deals(
                 )
             )
         return deals
+
+    # The sanctioned flyer provider (FlippClient) is a stub; this direct backflipp
+    # endpoint is experimental and sends the household postal code off-device.
+    # Disabled by default so we never make an undisclosed third-party call — the
+    # caller must opt in explicitly. Fail loud rather than silently calling out.
+    if os.environ.get("GROCERYSENSE_ENABLE_FLIPP") != "1":
+        raise RuntimeError(
+            "Live flyer search is disabled: no sanctioned flyer provider is wired "
+            "(FlippClient is a stub). Set GROCERYSENSE_ENABLE_FLIPP=1 to opt in to "
+            "the experimental backflipp endpoint (sends your postal code off-device)."
+        )
 
     # Example parameter set; adjust once you know the real API contract
     params = {
