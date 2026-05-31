@@ -153,19 +153,39 @@ class MultiBuyDealService:
 
         m = self._re_slash.search(t)
         if m:
-            qty = int(m.group(1))
-            total = float(m.group(2))
-            if qty > 0 and total > 0:
-                return qty, total
+            bundle = self._validate_bundle(m.group(1), m.group(2))
+            if bundle is not None:
+                return bundle
 
         m = self._re_for.search(t)
         if m:
-            qty = int(m.group(1))
-            total = float(m.group(2))
-            if qty > 0 and total > 0:
-                return qty, total
+            bundle = self._validate_bundle(m.group(1), m.group(2))
+            if bundle is not None:
+                return bundle
 
         return None
+
+    @staticmethod
+    def _validate_bundle(qty_s: str, total_s: str) -> Optional[Tuple[int, float]]:
+        """Accept only plausible multi-buy bundles.
+
+        The slash/`for` patterns are otherwise greedy enough to misread ordinary
+        text as a bundle price, e.g. "1/2 cup" (qty 1) or a date like "12/2024"
+        (total 2024). A real multi-buy has qty >= 2 and a grocery-scale total, so:
+          - qty in [2, 24]
+          - 0 < total <= 999
+        This keeps legitimate dollarless bundles like "2/5" ("2 for $5") working.
+        """
+        try:
+            qty = int(qty_s)
+            total = float(total_s)
+        except (TypeError, ValueError):
+            return None
+        if qty < 2 or qty > 24:
+            return None
+        if total <= 0 or total > 999:
+            return None
+        return qty, total
 
     def _parse_at_price(self, text: str) -> Optional[Tuple[int, float]]:
         t = (text or "").lower()
