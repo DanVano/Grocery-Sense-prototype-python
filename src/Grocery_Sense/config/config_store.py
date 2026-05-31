@@ -802,6 +802,12 @@ def get_user_profile() -> Dict[str, Any]:
             restrictions.append("no_meat")
         if not raw.get("eats_fish", True):
             restrictions.append("no_fish")
+        # Master protein exclusions are HARD household-wide (see preferences_service),
+        # so surface them as no_<protein> tokens the meal hard-filter honours.
+        for p in raw.get("excluded_proteins", []) or []:
+            tok = str(p).strip().lower()
+            if tok:
+                restrictions.append(f"no_{tok}")
         raw["restrictions"] = restrictions
     if "prefer_meats" not in raw:
         weights = raw.get("preferred_protein_weights", {})

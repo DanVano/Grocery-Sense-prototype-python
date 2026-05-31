@@ -83,11 +83,14 @@ def _recipe_has_disallowed_ingredients(recipe: Dict[str, Any], profile: Dict[str
         if _word_in_text(term, ingredients_text):
             return True
 
-    # Map some restrictions to ingredient bans
-    if "no_pork" in restrictions and _word_in_text("pork", ingredients_text):
-        return True
-    if "no_beef" in restrictions and _word_in_text("beef", ingredients_text):
-        return True
+    # Map "no_<ingredient>" restrictions to hard ingredient bans (e.g. "no_pork",
+    # "no_chicken"). "no_meat"/"no_fish" are umbrella diet flags, not single-
+    # ingredient bans, so they are excluded here.
+    for r in restrictions:
+        if r.startswith("no_"):
+            term = r[3:].strip()
+            if term and term not in ("meat", "fish") and _word_in_text(term, ingredients_text):
+                return True
 
     return False
 
