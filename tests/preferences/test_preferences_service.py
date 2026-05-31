@@ -98,6 +98,35 @@ class TestStrongSoftThreshold:
 
 
 # ---------------------------------------------------------------------------
+# M-06: consensus counted by member ID, not display name
+# ---------------------------------------------------------------------------
+
+
+class TestSoftExcludeConsensusByIdM6:
+    """Two SECONDARY members sharing a display name must still count as two
+    distinct voters toward the strong-soft threshold (id-based, not name-based)."""
+
+    def test_two_same_named_secondaries_reach_strong_soft(self, tmp_config_file):
+        _seed_master()
+        _add_secondary("Sam", soft_excludes=["tofu"])
+        _add_secondary("Sam", soft_excludes=["tofu"])
+
+        eff = compute_effective_preferences()
+        # N=3 (Primary + two Sams); strong requires S>=2 -> both Sams must count.
+        assert eff.secondary_soft_excluder_count("tofu") == 2
+        assert eff.is_strong_soft_excluded("tofu")
+
+    def test_protein_consensus_counts_same_named_secondaries(self, tmp_config_file):
+        _seed_master()
+        _add_secondary("Sam", excluded_proteins=["tofu"])
+        _add_secondary("Sam", excluded_proteins=["tofu"])
+
+        eff = compute_effective_preferences()
+        assert eff.secondary_soft_protein_excluder_count("tofu") == 2
+        assert eff.is_strong_soft_protein_excluded("tofu")
+
+
+# ---------------------------------------------------------------------------
 # compute_effective_preferences — rule-by-rule
 # ---------------------------------------------------------------------------
 

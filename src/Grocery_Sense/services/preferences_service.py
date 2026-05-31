@@ -96,11 +96,13 @@ class EffectivePreferences:
     hard_excludes: Set[str] = field(default_factory=set)
 
     soft_excludes: Dict[str, List[str]] = field(default_factory=dict)  # ingredient -> member names
+    soft_exclude_ids: Dict[str, Set[int]] = field(default_factory=dict)  # ingredient -> member ids (consensus)
     soft_exclude_counts: Dict[str, int] = field(default_factory=dict)  # ingredient -> secondary count
     strong_soft_excludes: Set[str] = field(default_factory=set)
 
     excluded_proteins_hard: Set[str] = field(default_factory=set)
     excluded_proteins_soft: Dict[str, List[str]] = field(default_factory=dict)  # protein -> member names
+    soft_protein_exclude_ids: Dict[str, Set[int]] = field(default_factory=dict)  # protein -> member ids
     soft_protein_exclude_counts: Dict[str, int] = field(default_factory=dict)  # protein -> secondary count
     strong_soft_proteins: Set[str] = field(default_factory=set)
 
@@ -180,22 +182,30 @@ def _norm_dict(values: Any) -> Dict[str, Any]:
     return {}
 
 
-def _add_soft(m: EffectivePreferences, key: str, member_name: str) -> None:
+def _add_soft(m: EffectivePreferences, key: str, member_name: str, member_id: Optional[int] = None) -> None:
     k = _norm_token(key)
     if not k:
         return
     m.soft_excludes.setdefault(k, [])
     if member_name not in m.soft_excludes[k]:
         m.soft_excludes[k].append(member_name)
+    # Track member ids so consensus counts are correct even when two members
+    # share a display name.
+    ids = m.soft_exclude_ids.setdefault(k, set())
+    if member_id is not None:
+        ids.add(int(member_id))
 
 
-def _add_soft_protein(m: EffectivePreferences, key: str, member_name: str) -> None:
+def _add_soft_protein(m: EffectivePreferences, key: str, member_name: str, member_id: Optional[int] = None) -> None:
     k = _norm_token(key)
     if not k:
         return
     m.excluded_proteins_soft.setdefault(k, [])
     if member_name not in m.excluded_proteins_soft[k]:
         m.excluded_proteins_soft[k].append(member_name)
+    ids = m.soft_protein_exclude_ids.setdefault(k, set())
+    if member_id is not None:
+        ids.add(int(member_id))
 
 
 def _get_master_member():
@@ -328,8 +338,9 @@ def compute_effective_preferences() -> EffectivePreferences:
 
     # 7) Soft excludes:
     # - master soft_excludes are tracked but NOT starred by default
+    master_id = getattr(master, "id", None)
     for x in _norm_list(mprof.get("soft_excludes", [])):
-        _add_soft(eff, x, master_name)
+        _add_soft(eff, x, master_name, master_id)
 
     # - secondary soft excludes, plus secondary "hard_excludes" treated as soft (redundant)
     for mem in members:
@@ -342,26 +353,29 @@ def compute_effective_preferences() -> EffectivePreferences:
 
         prof = _profile(mem)
         mem_name = getattr(mem, "name", "Member")
+        mem_id = getattr(mem, "id", None)
 
         for x in _norm_list(prof.get("soft_excludes", [])) + _norm_list(prof.get("hard_excludes", [])):
-            _add_soft(eff, x, mem_name)
+            _add_soft(eff, x, mem_name, mem_id)
 
         for p in _norm_list(prof.get("excluded_proteins", [])):
-            _add_soft_protein(eff, p, mem_name)
+            _add_soft_protein(eff, p, mem_name, mem_id)
 
-    # 8) Strong soft excludes (SECONDARY consensus only)
+    # 8) Strong soft excludes (SECONDARY consensus only).
+    # Counts are computed over member IDS (not names) so two members sharing a
+    # display name are still counted distinctly.
     n_members = len(members) if members else 0
 
-    for ing, names in eff.soft_excludes.items():
-        secondary_names = [n for n in names if n != master_name]
-        s_count = len(secondary_names)
+    for ing in eff.soft_excludes:
+        ids = eff.soft_exclude_ids.get(ing, set())
+        s_count = len({i for i in ids if i != master_id})
         eff.soft_exclude_counts[ing] = s_count
         if _strong_soft_threshold(n_members, s_count):
             eff.strong_soft_excludes.add(ing)
 
-    for prot, names in eff.excluded_proteins_soft.items():
-        secondary_names = [n for n in names if n != master_name]
-        s_count = len(secondary_names)
+    for prot in eff.excluded_proteins_soft:
+        ids = eff.soft_protein_exclude_ids.get(prot, set())
+        s_count = len({i for i in ids if i != master_id})
         eff.soft_protein_exclude_counts[prot] = s_count
         if _strong_soft_threshold(n_members, s_count):
             eff.strong_soft_proteins.add(prot)
