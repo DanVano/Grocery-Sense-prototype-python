@@ -455,12 +455,11 @@ class TestDealsCache:
 
 class TestDuplicateResetDefinitionFinding:
     """
-    FINDING: the function `reset_secondary_member_to_household_baseline`
-    exists in two modules with slightly different signatures/semantics:
-      - config_store.reset_secondary_member_to_household_baseline(id) -> bool
-      - preferences_service.reset_secondary_member_to_household_baseline(id) -> None
-    Callers get different behaviour depending on which import wins. Tests
-    lock in both until the duplication is resolved.
+    RESOLVED (Phase 4 M-04): the function
+    `reset_secondary_member_to_household_baseline` previously existed in two
+    modules with divergent semantics. The preferences_service version now
+    delegates to the config_store data-layer owner, so both return bool and
+    share one implementation.
     """
 
     def test_config_store_version_returns_bool(self, tmp_config_file):
@@ -479,11 +478,23 @@ class TestDuplicateResetDefinitionFinding:
         result = config_store.reset_secondary_member_to_household_baseline(master.id)
         assert result is False
 
-    def test_preferences_service_version_returns_none(self, tmp_config_file):
-        """The preferences_service version returns None (implicit)."""
+    def test_preferences_service_version_delegates_to_config_store(self, tmp_config_file):
+        """Resolved: preferences_service delegates to config_store -> returns
+        True, clears overrides, preserves allergies."""
         from Grocery_Sense.services import preferences_service
 
         alice = add_member("Alice")
-        save_member_profile(alice.id, {"soft_excludes": ["tofu"]})
+        save_member_profile(alice.id, {"allergies": ["peanuts"], "soft_excludes": ["tofu"]})
         result = preferences_service.reset_secondary_member_to_household_baseline(alice.id)
-        assert result is None
+        assert result is True
+
+        prof = get_member_profile(alice.id)
+        assert prof["soft_excludes"] == []
+        assert "peanuts" in prof["allergies"]
+
+    def test_preferences_service_version_refuses_master(self, tmp_config_file):
+        """Resolved: the master cannot be reset via the preferences_service path."""
+        from Grocery_Sense.services import preferences_service
+
+        master = get_master_member()
+        assert preferences_service.reset_secondary_member_to_household_baseline(master.id) is False

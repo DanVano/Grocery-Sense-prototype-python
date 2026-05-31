@@ -660,46 +660,23 @@ def validate_add_exclude(
 # Reset helper (for "Reset to household baseline" button)
 # ---------------------------------------------------------------------------
 
-def reset_secondary_member_to_household_baseline(member_id: int) -> None:
+def reset_secondary_member_to_household_baseline(member_id: int) -> bool:
     """
-    Clears SECONDARY member overrides back to baseline, while preserving allergies.
+    Reset a SECONDARY member's overrides back to the household baseline while
+    preserving allergies. Backs the UI "Reset to household baseline" button.
 
-    Meant to back the UI button:
-      "Reset to household baseline"
+    The master-guard POLICY lives here; the actual data reset + renormalization
+    is owned by config_store (the single source of truth) so the two
+    implementations can never diverge. Returns True when a reset occurred.
     """
-    cfg = config_store.load_config()
     master = _get_master_member()
-
-    # Don't allow resetting the master via this function
     try:
         if int(member_id) == int(master.id):
-            return
+            return False
     except Exception:
         pass
 
-    mem = _find_member(cfg, member_id)
-    if not mem:
-        return
-
-    prof = _profile(mem)
-    allergies = _norm_list(prof.get("allergies", []))
-
-    # Remove override keys
-    for k in list(_SECONDARY_OVERRIDE_KEYS):
-        prof.pop(k, None)
-
-    # Restore allergies
-    if allergies:
-        prof["allergies"] = allergies
-    else:
-        prof.pop("allergies", None)
-
-    try:
-        mem.profile = prof
-    except Exception:
-        pass
-
-    config_store.save_config(cfg)
+    return config_store.reset_secondary_member_to_household_baseline(member_id)
 
 
 # ---------------------------------------------------------------------------
