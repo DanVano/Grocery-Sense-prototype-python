@@ -399,7 +399,7 @@ class PriceDropAlertService:
             )
             six_low_map = get_six_month_low_batch(unique_item_ids, since_days=self.LOW_LOOKBACK_DAYS)
 
-            batch: List[Tuple[Any, ...]] = []
+            best: Dict[Tuple[int, int, str], Tuple[Any, ...]] = {}
             for r in rows:
                 item_id = int(r["item_id"])
                 store_id = int(r["store_id"] or 0)
@@ -421,13 +421,21 @@ class PriceDropAlertService:
                 if pct_below < self.DROP_BELOW_USUAL_THRESHOLD_PCT:
                     continue
 
-                six_low, six_low_when = six_low_map.get(item_id, (None, None))
-                pct_above_low = ((paid - six_low) / six_low) * 100.0 if (six_low and six_low >= 0.05) else None
-
                 kind = "below_usual"
                 key = AlertKey(item_id=item_id, store_id=store_id, alert_kind=kind)
                 if key in dismissed_keys:
                     continue
+
+                # Keep only the strongest (largest pct_below) row per
+                # (item, store, kind): a staple bought cheaply several times in
+                # the window should yield ONE alert, not one per receipt line.
+                dedupe_key = (item_id, store_id, kind)
+                prev = best.get(dedupe_key)
+                if prev is not None and prev[6] >= pct_below:
+                    continue
+
+                six_low, six_low_when = six_low_map.get(item_id, (None, None))
+                pct_above_low = ((paid - six_low) / six_low) * 100.0 if (six_low and six_low >= 0.05) else None
 
                 notes = self._build_notes(
                     item_name=str(item.canonical_name),
@@ -444,7 +452,7 @@ class PriceDropAlertService:
                     low_when=six_low_when,
                 )
 
-                batch.append((
+                best[dedupe_key] = (
                     item_id,
                     store_id,
                     store_name,
@@ -461,9 +469,10 @@ class PriceDropAlertService:
                     "receipt",
                     None,
                     notes,
-                ))
-                inserted += 1
+                )
 
+            batch = list(best.values())
+            inserted = len(batch)
             if batch:
                 conn.executemany(
                     """
