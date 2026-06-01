@@ -45,6 +45,43 @@ class MultiBuyDealService:
         line_total: Optional[float],
         discount: Optional[float],
     ) -> DealAdjusted:
+        # If a quantity WAS reported but is unusable (<=0 / non-numeric) we
+        # default it to 1.0 below, which can distort the effective unit price.
+        # Disclose that substitution in the deal_note rather than coercing it
+        # silently (DealAdjusted is frozen, so we rebuild it with the marker).
+        qty_reported_but_invalid = False
+        if quantity is not None:
+            try:
+                qty_reported_but_invalid = float(quantity) <= 0
+            except (TypeError, ValueError):
+                qty_reported_but_invalid = True
+
+        da = self._adjust_core(
+            description=description,
+            quantity=quantity,
+            unit_price=unit_price,
+            line_total=line_total,
+            discount=discount,
+        )
+        if qty_reported_but_invalid:
+            note = f"{da.deal_note};qty_defaulted" if da.deal_note else "qty_defaulted"
+            da = DealAdjusted(
+                quantity=da.quantity,
+                unit_price=da.unit_price,
+                line_total=da.line_total,
+                deal_note=note,
+            )
+        return da
+
+    def _adjust_core(
+        self,
+        *,
+        description: str,
+        quantity: Optional[float],
+        unit_price: Optional[float],
+        line_total: Optional[float],
+        discount: Optional[float],
+    ) -> DealAdjusted:
         desc = (description or "").strip()
         try:
             q = float(quantity) if quantity is not None else 1.0
