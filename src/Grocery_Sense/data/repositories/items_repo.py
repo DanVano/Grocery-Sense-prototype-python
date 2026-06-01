@@ -105,6 +105,14 @@ def create_item(
     if not name_clean:
         raise ValueError("canonical_name cannot be empty")
 
+    # Match get_item_by_name's case-insensitive equality so "Milk" and "milk"
+    # don't both create rows: the canonical_name UNIQUE index is case-sensitive
+    # (BINARY), but lookups fold case, so INSERT OR IGNORE alone would let
+    # case-variants coexist and split an item's price history.
+    existing = get_item_by_name(name_clean)
+    if existing:
+        return existing
+
     with connection_scope() as conn, closing(conn.cursor()) as cur:
         cur.execute(
             """
@@ -320,6 +328,38 @@ def get_items_by_ids(item_ids: List[int]) -> Dict[int, Item]:
             for row in conn.execute(sql, chunk).fetchall():
                 item = _row_to_item(row)
                 out[item.id] = item
+    return out
+
+
+def get_items_by_names(names: List[str]) -> Dict[str, Item]:
+    """Return a {lowercased_name: Item} map for many canonical names in a single
+    (chunked) query. Case-insensitive, mirroring get_item_by_name.
+
+    Replaces N calls to get_item_by_name(name) in loops. Missing names are
+    silently omitted.
+    """
+    cleaned: List[str] = []
+    seen: set = set()
+    for n in names:
+        nl = (n or "").strip().lower()
+        if nl and nl not in seen:
+            seen.add(nl)
+            cleaned.append(nl)
+    if not cleaned:
+        return {}
+
+    out: Dict[str, Item] = {}
+    with closing(get_connection()) as conn:
+        for chunk in _chunked(cleaned, 900):
+            placeholders = ",".join("?" * len(chunk))
+            sql = (
+                "SELECT id, canonical_name, category, default_unit, "
+                "typical_package_size, typical_package_unit, is_tracked, notes, created_at "
+                f"FROM items WHERE lower(canonical_name) IN ({placeholders})"
+            )
+            for row in conn.execute(sql, chunk).fetchall():
+                item = _row_to_item(row)
+                out[item.canonical_name.strip().lower()] = item
     return out
 
 

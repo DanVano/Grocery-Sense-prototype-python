@@ -42,6 +42,7 @@ from Grocery_Sense.services.preferences_service import (
     get_effective_edit_state_for_member,
     get_household_baseline_profile,
     get_household_hard_excludes,
+    get_meal_profile,
     get_soft_exclude_marker,
     get_star_excluders,
     protein_groups,
@@ -172,6 +173,29 @@ class TestHardExcludeRule:
         eff = compute_effective_preferences()
         assert not eff.is_hard_excluded("liver")
         assert "Alice" in eff.soft_excluders("liver")
+
+
+class TestMealProfile:
+    """M1: the meal/recipe profile must be resolved household-wide (not master-
+    only), and SOFT excludes must never become hard recipe bans."""
+
+    def test_secondary_allergy_is_household_hard(self, tmp_config_file):
+        _seed_master()
+        _add_secondary("Alice", allergies=["peanut"])
+        prof = get_meal_profile()
+        # A secondary member's allergy must hard-ban recipes household-wide.
+        assert "peanut" in prof["allergies"]
+
+    def test_master_soft_exclude_does_not_hard_ban(self, tmp_config_file):
+        _seed_master(soft_excludes=["mushroom"])
+        prof = get_meal_profile()
+        assert "mushroom" not in prof["allergies"]
+        assert "mushroom" not in prof["avoid_ingredients"]
+
+    def test_master_hard_exclude_is_honored(self, tmp_config_file):
+        _seed_master(hard_excludes=["pork"])
+        prof = get_meal_profile()
+        assert "pork" in prof["allergies"]
 
 
 class TestSoftExcludeRule:

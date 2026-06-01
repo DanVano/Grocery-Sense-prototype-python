@@ -19,7 +19,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from Grocery_Sense.config.config_store import get_user_profile
+from Grocery_Sense.services.preferences_service import get_meal_profile
 from Grocery_Sense.recipes.recipe_engine import (
     RecipeEngine,
     load_all_recipes,
@@ -361,7 +361,8 @@ class MealSuggestionService:
         High-level entrypoint.
 
         profile:
-            If None, uses config_store.get_user_profile().
+            If None, uses preferences_service.get_meal_profile() (household-wide:
+            every member's allergy is honoured, soft excludes don't hard-ban).
 
         target_ingredients:
             - If provided, we first filter recipes using
@@ -375,7 +376,7 @@ class MealSuggestionService:
             Optional set/list of recipe IDs cooked recently; helps encourage variety.
         """
         if profile is None:
-            profile = get_user_profile()
+            profile = get_meal_profile()
 
         # 1) Get candidate recipes
         if target_ingredients:
@@ -406,13 +407,12 @@ class MealSuggestionService:
         # per (recipe, ingredient).
         baseline_map: Dict[str, Optional[float]] = {}
         if self.price_history_service is not None:
-            for ing in all_ingredients:
-                try:
-                    baseline_map[ing] = self.price_history_service.get_baseline_price(
-                        ing, window_days=90
-                    )
-                except Exception:
-                    baseline_map[ing] = None
+            try:
+                baseline_map = self.price_history_service.get_baseline_prices(
+                    list(all_ingredients), window_days=90
+                )
+            except Exception:
+                baseline_map = {}
 
         # 3) Score each recipe
         suggestions: List[SuggestedMeal] = []

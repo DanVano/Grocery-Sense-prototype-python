@@ -385,6 +385,47 @@ def compute_effective_preferences() -> EffectivePreferences:
     return eff
 
 
+def get_meal_profile() -> Dict[str, Any]:
+    """
+    Flat meal/recipe profile resolved HOUSEHOLD-WIDE.
+
+    Unlike config_store.get_user_profile (which reads the master member only),
+    this routes through compute_effective_preferences so that EVERY member's
+    allergy is a hard, household-wide exclusion, and SOFT excludes never
+    hard-ban a recipe (soft == keep the item, just don't star it).
+
+    Returns the keys MealSuggestionService / RecipeEngine consume:
+      allergies, avoid_ingredients, restrictions, prefer_meats, avoid_meats,
+      favorite_tags
+    """
+    eff = compute_effective_preferences()
+    mprof = _profile(_get_master_member())
+
+    restrictions: List[str] = []
+    if not mprof.get("eats_meat", True):
+        restrictions.append("no_meat")
+    if not mprof.get("eats_fish", True):
+        restrictions.append("no_fish")
+    # Master protein exclusions are hard household-wide; surface them as the
+    # no_<protein> tokens the meal hard-filter honours.
+    for p in sorted(eff.excluded_proteins_hard):
+        restrictions.append(f"no_{p}")
+
+    return {
+        # hard bans: household allergies (any member) + master hard_excludes
+        "allergies": sorted(eff.hard_excludes),
+        # soft excludes must NOT hard-ban recipes, so this stays empty
+        "avoid_ingredients": [],
+        "restrictions": restrictions,
+        "prefer_meats": [
+            k for k, v in eff.protein_weights.items()
+            if isinstance(v, (int, float)) and v > 1.0
+        ],
+        "avoid_meats": sorted(eff.excluded_proteins_hard),
+        "favorite_tags": list(mprof.get("favorite_tags", []) or []),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Annotation helpers (for list + recommendation UI)
 # ---------------------------------------------------------------------------

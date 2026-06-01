@@ -133,20 +133,20 @@ class TestItemAliasesHasNoCascade:
 
 
 class TestCanonicalNameUnique:
-    def test_case_variants_create_separate_rows(self, isolated_db):
+    def test_case_variants_resolve_to_same_item(self, isolated_db):
         """
-        FINDING (open): items.canonical_name UNIQUE is case-sensitive at the
-        SQL level (default TEXT collation is BINARY), so 'milk' and 'MILK'
-        both land as separate rows.
+        M4: create_item now folds case to match get_item_by_name, so 'milk' and
+        'MILK' resolve to a single item instead of splitting price history across
+        two rows.
         """
         a = create_item(canonical_name="milk")
         b = create_item(canonical_name="MILK")
-        assert a.id != b.id
+        assert a.id == b.id
 
         from Grocery_Sense.data.repositories.items_repo import get_item_by_name
-        found = get_item_by_name("milk")
+        found = get_item_by_name("MiLk")
         assert found is not None
-        assert found.id in {a.id, b.id}
+        assert found.id == a.id
 
     def test_internal_whitespace_is_not_deduped(self, isolated_db):
         """
