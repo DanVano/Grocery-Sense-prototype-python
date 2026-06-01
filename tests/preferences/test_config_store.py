@@ -90,11 +90,12 @@ class TestLoadSaveRoundTrip:
         assert reloaded.city == "Coquitlam"
         assert reloaded.store_priority == {"Walmart": 10, "Save-On": 5}
 
-    def test_corrupted_json_falls_back_to_defaults(self, tmp_config_file):
+    def test_corrupted_json_raises_instead_of_wiping(self, tmp_config_file):
+        # A corrupt user_config.json must FAIL LOUD, not silently reset to
+        # defaults (which would wipe the user's members/allergies). See M3 / 1A-10.
         tmp_config_file.write_text("{ not json", encoding="utf-8")
-        cfg = load_config()
-        assert isinstance(cfg, UserConfig)
-        assert len(cfg.household.members) >= 1
+        with pytest.raises(RuntimeError, match="corrupt"):
+            load_config()
 
     def test_version_bumped_on_load(self, tmp_config_file):
         tmp_config_file.write_text(

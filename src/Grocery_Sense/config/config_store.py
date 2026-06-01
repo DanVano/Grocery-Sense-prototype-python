@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import copy
 import json
+import logging
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
@@ -335,9 +337,16 @@ def _read_raw_config() -> Dict[str, Any]:
     try:
         with _CONFIG_FILE.open("r", encoding="utf-8") as f:
             data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+    except json.JSONDecodeError as e:
+        # Fail loud: a corrupt user_config.json must NOT be silently reset to
+        # defaults — that would wipe the user's household members and allergies
+        # (a safety-critical loss). Surface a clear, actionable error instead.
+        raise RuntimeError(
+            f"user_config.json is corrupt and cannot be parsed ({e}). "
+            f"Refusing to overwrite it with defaults - your household and allergy "
+            f"settings would be lost. Fix or restore the file at {_CONFIG_FILE}."
+        ) from e
+    return data if isinstance(data, dict) else {}
 
 
 def _write_raw_config(data: Dict[str, Any]) -> None:
@@ -445,7 +454,13 @@ def load_config() -> UserConfig:
             raw = _read_raw_config()
             _config_cache = _from_raw_config(raw)
             _config_mtime_key = key
-        return _config_cache
+        # Return an independent snapshot, not the shared cached object. Readers
+        # run on daemon worker threads (meal suggestion, flyer sync, price-drop
+        # alerts) while the UI mutates the household on the main thread; handing
+        # out the live object would let a reader iterate a list mid-mutation
+        # ("list changed size during iteration"). The household is tiny, so the
+        # deepcopy cost is negligible. Mutators must read-modify-save_config().
+        return copy.deepcopy(_config_cache)
 
 
 def save_config(cfg: UserConfig) -> None:
@@ -668,6 +683,12 @@ def _load_cache() -> Dict[str, Any]:
             try:
                 _deals_cache = json.loads(_CACHE_FILE.read_text(encoding="utf-8")) or {}
             except Exception:
+                # The deals cache is regenerable, so resetting is acceptable —
+                # but disclose it (don't silently degrade).
+                logging.getLogger(__name__).warning(
+                    "deals_cache.json was corrupt; rebuilding an empty cache (%s).",
+                    _CACHE_FILE,
+                )
                 _deals_cache = {}
         else:
             _deals_cache = {}
