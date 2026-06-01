@@ -375,7 +375,7 @@ class TestPreferenceAnnotations:
         monkeypatch.setattr(bo_mod, "preferences_service", fake_ps)
         return eff
 
-    def test_hard_exclude_flagged(self, svc, sl, fake_prefs):
+    def test_hard_exclude_removed_from_plan(self, svc, sl, fake_prefs):
         a = create_store(name="A", is_favorite=True)
         item = create_item(canonical_name="peanuts")
         add_price_point(
@@ -385,9 +385,33 @@ class TestPreferenceAnnotations:
         _add_to_basket(sl, "peanuts", item.id)
 
         result = svc.optimize(mode="one_store")
-        plan = result.stores[0].items[0]
-        assert plan.hard_excluded is True
-        assert any("HARD exclude" in w for w in result.warnings)
+        # A household allergy/hard-exclude is pulled OUT of the buy plan, not
+        # silently routed into it (M2).
+        assert all(
+            it.item_id != item.id for sp in result.stores for it in sp.items
+        )
+        assert len(result.excluded_items) == 1
+        assert result.excluded_items[0].hard_excluded is True
+        assert result.excluded_items[0].name.lower() == "peanuts"
+        assert any("EXCLUDED" in w for w in result.warnings)
+
+    def test_mixed_basket_excludes_only_allergen(self, svc, sl, fake_prefs):
+        a = create_store(name="A", is_favorite=True)
+        allergen = create_item(canonical_name="peanuts")
+        normal = create_item(canonical_name="rice")
+        for it in (allergen, normal):
+            add_price_point(
+                item_id=it.id, store_id=a.id, unit_price=3.0, unit="each",
+                source="receipt", date=_recent(),
+            )
+        _add_to_basket(sl, "peanuts", allergen.id)
+        _add_to_basket(sl, "rice", normal.id)
+
+        result = svc.optimize(mode="one_store")
+        planned_ids = {it.item_id for sp in result.stores for it in sp.items}
+        assert normal.id in planned_ids          # normal item still optimized
+        assert allergen.id not in planned_ids     # allergen pulled out
+        assert {p.item_id for p in result.excluded_items} == {allergen.id}
 
     def test_soft_exclude_annotated(self, svc, sl, fake_prefs):
         a = create_store(name="A", is_favorite=True)

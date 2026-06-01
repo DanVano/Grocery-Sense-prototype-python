@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+import sqlite3
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -136,6 +137,12 @@ class BasketOptimizationResult:
 
     warnings: List[str] = field(default_factory=list)
 
+    # Items that match a household HARD exclude / allergy. They are kept OUT of
+    # the optimized buy plan (not priced, not assigned, not in totals) and
+    # surfaced here so the UI can flag them rather than silently route the user
+    # to buy an allergen.
+    excluded_items: List[BasketItemPlan] = field(default_factory=list)
+
 
 # ---------------------------------------------------------------------------
 # Basket optimizer service
@@ -192,6 +199,7 @@ class BasketOptimizerService:
 
         # Normalize basket items and precompute stats
         normalized: List[BasketItemPlan] = []
+        excluded: List[BasketItemPlan] = []
         for it in basket_items:
             # shopping_list_repo returns ShoppingListItem dataclass (id, item_id, name, quantity, unit, etc.)
             try:
@@ -218,10 +226,27 @@ class BasketOptimizerService:
             if eff is not None:
                 self._apply_preference_annotations(plan, eff, safe_phrases)
 
+            # A household HARD exclude / allergy match is kept OUT of the buy
+            # plan entirely (not priced, not summed) — see M2 / CLAUDE.md
+            # "allergies are ALWAYS hard exclusions, household-wide".
+            if plan.hard_excluded:
+                excluded.append(plan)
+                continue
+
             normalized.append(plan)
 
+        result.excluded_items = excluded
+
         if not normalized:
-            result.warnings.append("No optimizable items found (missing item_id on shopping list entries).")
+            if excluded:
+                result.warnings.append(
+                    f"{len(excluded)} basket item(s) match a household allergy/hard-exclude "
+                    f"and were EXCLUDED from the buy plan: "
+                    f"{', '.join(p.name for p in excluded)}. "
+                    f"Remove them from your list or review the household allergy settings."
+                )
+            else:
+                result.warnings.append("No optimizable items found (missing item_id on shopping list entries).")
             return result
 
         all_item_ids = [p.item_id for p in normalized]
@@ -331,11 +356,14 @@ class BasketOptimizerService:
                 "Two-store mode may save more, but requires an extra trip (time + gas)."
             )
 
-        # Preference warnings
-        hard_hits = sum(1 for it in normalized if it.hard_excluded)
-        if hard_hits:
+        # Preference warnings: hard-excluded / allergen items were pulled OUT of
+        # the optimized plan above; tell the user which and why.
+        if excluded:
             result.warnings.append(
-                f"{hard_hits} basket item(s) match a household HARD exclude (or allergy). Double-check these."
+                f"{len(excluded)} basket item(s) match a household allergy/hard-exclude "
+                f"and were EXCLUDED from the buy plan: "
+                f"{', '.join(p.name for p in excluded)}. "
+                f"Remove them from your list or review the household allergy settings."
             )
 
         # sort store plans by total
@@ -689,36 +717,45 @@ class BasketOptimizerService:
 
         today = _today_date().isoformat()
         store_ph = ",".join("?" * len(stores))
-        item_ph = ",".join("?" * len(items))
-        sql = (
-            "SELECT p.store_id, p.item_id, p.unit_price, COALESCE(p.unit, 'each') AS unit "
-            "FROM prices p "
-            "JOIN flyer_sources fs ON fs.id = p.flyer_source_id "
-            "WHERE p.source = 'flyer' "
-            f"  AND p.store_id IN ({store_ph}) "
-            f"  AND p.item_id  IN ({item_ph}) "
-            "  AND p.unit_price IS NOT NULL "
-            "  AND date(fs.valid_from) <= date(?) "
-            "  AND date(fs.valid_to)   >= date(?)"
-        )
 
         out: Dict[Tuple[int, int], Tuple[float, str]] = {}
+        # Chunk the item IN list so a large basket never blows past SQLite's
+        # variable limit (matches prices_repo._SQL_PARAM_CHUNK = 900). The old
+        # code inlined every item id in one query and swallowed the resulting
+        # "too many SQL variables" error, silently dropping all flyer prices.
+        CHUNK = 900
         try:
             with connection_scope() as conn:
-                rows = conn.execute(sql, (*stores, *items, today, today)).fetchall()
-        except Exception:
-            return {}
-
-        for r in rows:
-            try:
-                sid = int(r["store_id"])
-                iid = int(r["item_id"])
-                up = float(r["unit_price"])
-                unit = str(r["unit"] or "each").strip().lower()
-            except Exception:
-                continue
-            key = (sid, iid)
-            if key not in out or up < out[key][0]:
-                out[key] = (up, unit)
+                for i in range(0, len(items), CHUNK):
+                    chunk = items[i:i + CHUNK]
+                    item_ph = ",".join("?" * len(chunk))
+                    sql = (
+                        "SELECT p.store_id, p.item_id, p.unit_price, COALESCE(p.unit, 'each') AS unit "
+                        "FROM prices p "
+                        "JOIN flyer_sources fs ON fs.id = p.flyer_source_id "
+                        "WHERE p.source = 'flyer' "
+                        f"  AND p.store_id IN ({store_ph}) "
+                        f"  AND p.item_id  IN ({item_ph}) "
+                        "  AND p.unit_price IS NOT NULL "
+                        "  AND date(fs.valid_from) <= date(?) "
+                        "  AND date(fs.valid_to)   >= date(?)"
+                    )
+                    for r in conn.execute(sql, (*stores, *chunk, today, today)).fetchall():
+                        try:
+                            sid = int(r["store_id"])
+                            iid = int(r["item_id"])
+                            up = float(r["unit_price"])
+                            unit = str(r["unit"] or "each").strip().lower()
+                        except Exception:
+                            continue
+                        key = (sid, iid)
+                        if key not in out or up < out[key][0]:
+                            out[key] = (up, unit)
+        except sqlite3.OperationalError as e:
+            # Early-prototype DBs may not have a flyer_sources table yet; treat
+            # that as "no active flyer prices". Any OTHER operational error is a
+            # real fault and must surface (fail loud), not silently degrade.
+            if "flyer_sources" not in str(e).lower():
+                raise
 
         return out
