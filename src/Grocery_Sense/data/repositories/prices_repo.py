@@ -842,3 +842,105 @@ def get_price_stats_batch(
                     count=int(r[4]),
                 )
     return out
+
+
+def get_recent_avg_unit_price_by_store_batch(
+    item_ids: List[int],
+    store_ids: List[int],
+    *,
+    since_days: int = 180,
+    limit: int = 12,
+) -> Dict[Tuple[int, int], float]:
+    """Average of the most-recent `limit` unit prices per (item_id, store_id),
+    within the trailing `since_days` window, in a single (chunked) query.
+
+    Replaces the O(items x stores) per-pair calls PlanningService made via
+    mean(get_prices_for_item(item_id, store_id, since_days, limit)). Parity: rows
+    are ranked by date DESC and the top `limit` are kept (NULL unit_prices count
+    toward the limit, exactly like get_prices_for_item's DESC+LIMIT), then AVG
+    skips NULLs (matching the Python `p.unit_price is not None` filter).
+    """
+    items = _coerce_id_list(item_ids)
+    stores = _coerce_id_list(store_ids)
+    if not items or not stores:
+        return {}
+
+    cutoff = (datetime.now(timezone.utc).date() - timedelta(days=int(since_days))).isoformat()
+    lim = int(limit) if limit and int(limit) > 0 else None
+    store_ph = ",".join("?" * len(stores))
+    out: Dict[Tuple[int, int], float] = {}
+    with closing(get_connection()) as conn:
+        for chunk in _chunks(items):
+            item_ph = ",".join("?" * len(chunk))
+            if lim is None:
+                sql = (
+                    "SELECT item_id, store_id, AVG(unit_price) "
+                    "FROM prices "
+                    f"WHERE item_id IN ({item_ph}) AND store_id IN ({store_ph}) "
+                    "  AND date >= ? AND unit_price IS NOT NULL "
+                    "GROUP BY item_id, store_id"
+                )
+                params: Tuple[Any, ...] = (*chunk, *stores, cutoff)
+            else:
+                sql = (
+                    "SELECT item_id, store_id, AVG(unit_price) FROM ( "
+                    "  SELECT item_id, store_id, unit_price, "
+                    "         ROW_NUMBER() OVER ( "
+                    "             PARTITION BY item_id, store_id ORDER BY date DESC, id DESC "
+                    "         ) AS rn "
+                    "  FROM prices "
+                    f"  WHERE item_id IN ({item_ph}) AND store_id IN ({store_ph}) AND date >= ? "
+                    ") WHERE rn <= ? AND unit_price IS NOT NULL "
+                    "GROUP BY item_id, store_id"
+                )
+                params = (*chunk, *stores, cutoff, lim)
+            for r in conn.execute(sql, params).fetchall():
+                if r[2] is not None:
+                    out[(int(r[0]), int(r[1]))] = float(r[2])
+    return out
+
+
+def get_recent_avg_unit_price_global_batch(
+    item_ids: List[int],
+    *,
+    since_days: int = 180,
+    limit: int = 20,
+) -> Dict[int, float]:
+    """Like get_recent_avg_unit_price_by_store_batch but across ALL stores —
+    PlanningService's overall fallback when an item has no store-specific
+    history. Mirrors mean(get_prices_for_item(item_id, store_id=None, ...)).
+    """
+    items = _coerce_id_list(item_ids)
+    if not items:
+        return {}
+
+    cutoff = (datetime.now(timezone.utc).date() - timedelta(days=int(since_days))).isoformat()
+    lim = int(limit) if limit and int(limit) > 0 else None
+    out: Dict[int, float] = {}
+    with closing(get_connection()) as conn:
+        for chunk in _chunks(items):
+            item_ph = ",".join("?" * len(chunk))
+            if lim is None:
+                sql = (
+                    "SELECT item_id, AVG(unit_price) FROM prices "
+                    f"WHERE item_id IN ({item_ph}) AND date >= ? AND unit_price IS NOT NULL "
+                    "GROUP BY item_id"
+                )
+                params: Tuple[Any, ...] = (*chunk, cutoff)
+            else:
+                sql = (
+                    "SELECT item_id, AVG(unit_price) FROM ( "
+                    "  SELECT item_id, unit_price, "
+                    "         ROW_NUMBER() OVER ( "
+                    "             PARTITION BY item_id ORDER BY date DESC, id DESC "
+                    "         ) AS rn "
+                    "  FROM prices "
+                    f"  WHERE item_id IN ({item_ph}) AND date >= ? "
+                    ") WHERE rn <= ? AND unit_price IS NOT NULL "
+                    "GROUP BY item_id"
+                )
+                params = (*chunk, cutoff, lim)
+            for r in conn.execute(sql, params).fetchall():
+                if r[1] is not None:
+                    out[int(r[0])] = float(r[1])
+    return out
