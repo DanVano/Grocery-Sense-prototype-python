@@ -27,7 +27,7 @@ from Grocery_Sense.data.connection import connection_scope, get_connection
 from Grocery_Sense.data.schema import initialize_database
 from Grocery_Sense.data.repositories.stores_repo import create_store, list_stores
 from Grocery_Sense.data.repositories import items_repo
-from Grocery_Sense.data.repositories.prices_repo import add_price_point
+from Grocery_Sense.data.repositories.prices_repo import add_price_points
 
 
 # -----------------------------
@@ -229,7 +229,8 @@ def seed_demo_data(
         else:
             store_bias[sid] = 0.99  # Superstore near baseline
 
-    # Create prices
+    # Create prices (accumulate, then one bulk insert instead of N commits)
+    price_rows: List[Tuple] = []
     while price_points_created < n_price_points:
         item_id, spec = rng.choice(created_items)
         store_id = rng.choice(created_store_ids)
@@ -255,22 +256,27 @@ def seed_demo_data(
             quantity = 1.0
             total_price = round(unit_price * quantity, 2)
 
-        add_price_point(
-            item_id=item_id,
-            store_id=store_id,
-            source="manual",
-            date=d_str,
-            unit_price=float(unit_price),
-            unit=spec.unit,
-            quantity=float(quantity),
-            total_price=float(total_price),
-            receipt_id=None,
-            flyer_source_id=None,
-            raw_name=spec.canonical_name,
-            confidence=5,
-        )
+        # tuple order matches add_price_points: (item_id, store_id, receipt_id,
+        # flyer_source_id, source, date, unit_price, unit, quantity, total_price,
+        # raw_name, confidence)
+        price_rows.append((
+            item_id,
+            store_id,
+            None,
+            None,
+            "manual",
+            d_str,
+            float(unit_price),
+            spec.unit,
+            float(quantity),
+            float(total_price),
+            spec.canonical_name,
+            5,
+        ))
 
         price_points_created += 1
+
+    add_price_points(price_rows)
 
     return {
         "stores": len(created_store_ids),
