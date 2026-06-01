@@ -267,8 +267,16 @@ class GrocerySenseApp(tk.Tk):
     # ------------------------------------------------------------------
 
     def _handle_init_db(self) -> None:
-        initialize_database()
-        self._log("Database schema initialized / verified.")
+        self._log("Initializing database schema…")
+
+        def worker():
+            try:
+                initialize_database()
+                self.after(0, lambda: self._log("Database schema initialized / verified."))
+            except Exception as exc:
+                self.after(0, lambda e=exc: messagebox.showerror("Error", str(e)))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _open_stores_management_window(self) -> None:
         """
@@ -285,11 +293,19 @@ class GrocerySenseApp(tk.Tk):
         )
 
     def _seed_demo_data(self) -> None:
-        result = seed_demo_data(reset_first=True, n_price_points=200, days_back=90, seed=42)
-        self._log(
-            f"Demo seed complete: stores={result['stores']}, "
-            f"items={result['items']}, prices={result['price_points']}"
-        )
+        self._log("Seeding demo data…")
+
+        def worker():
+            try:
+                result = seed_demo_data(reset_first=True, n_price_points=200, days_back=90, seed=42)
+                self.after(0, lambda: self._log(
+                    f"Demo seed complete: stores={result['stores']}, "
+                    f"items={result['items']}, prices={result['price_points']}"
+                ))
+            except Exception as exc:
+                self.after(0, lambda e=exc: messagebox.showerror("Error", str(e)))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     # ------------------------------------------------------------------
     # Shopping List window
@@ -587,9 +603,10 @@ class GrocerySenseApp(tk.Tk):
         output = ScrolledText(root, state=tk.NORMAL)
         output.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
 
-        def render_plan() -> None:
-            output.delete("1.0", tk.END)
+        refresh_btn = ttk.Button(header, text="Refresh")
+        refresh_btn.pack(side=tk.RIGHT)
 
+        def render_plan() -> None:
             try:
                 max_stores = int((max_var.get() or "3").strip())
                 if max_stores < 1:
@@ -597,48 +614,70 @@ class GrocerySenseApp(tk.Tk):
             except ValueError:
                 max_stores = 3
 
-            plan = self.planning_service.build_plan_for_active_list(max_stores=max_stores)
+            output.delete("1.0", tk.END)
+            output.insert(tk.END, "Building store plan…\n")
+            refresh_btn.config(state="disabled")
 
-            summary = str(plan.get("summary") or "")
-            output.insert(tk.END, summary + "\n\n")
+            # The plan build runs DB-heavy work; do it off the Tk main thread and
+            # marshal the result back so the window doesn't freeze. All widget
+            # access stays inside _render (main thread).
+            def worker():
+                try:
+                    plan = self.planning_service.build_plan_for_active_list(max_stores=max_stores)
+                    win.after(0, lambda: _render(plan, None))
+                except Exception as exc:
+                    win.after(0, lambda e=exc: _render(None, e))
 
-            stores_struct = plan.get("stores") or {}
-            if not stores_struct:
-                output.insert(tk.END, "(No stores selected)\n")
-            else:
-                store_rows = []
-                for sid, payload in stores_struct.items():
-                    items = payload.get("items") or []
-                    store_rows.append((sid, payload, len(items)))
-                store_rows.sort(key=lambda x: x[2], reverse=True)
+            def _render(plan, error) -> None:
+                refresh_btn.config(state="normal")
+                output.delete("1.0", tk.END)
+                if error is not None:
+                    output.insert(tk.END, f"Error: {error}\n")
+                    self._log(f"Store plan error: {error}")
+                    return
 
-                for _sid, payload, _count in store_rows:
-                    st = payload.get("store")
-                    items = payload.get("items") or []
-                    if not st:
-                        continue
+                summary = str(plan.get("summary") or "")
+                output.insert(tk.END, summary + "\n\n")
 
-                    fav = " ★" if getattr(st, "is_favorite", False) else ""
-                    pri = getattr(st, "priority", 0) or 0
-                    output.insert(tk.END, f"{st.name}{fav} (priority={pri})\n")
-                    for it in items:
+                stores_struct = plan.get("stores") or {}
+                if not stores_struct:
+                    output.insert(tk.END, "(No stores selected)\n")
+                else:
+                    store_rows = []
+                    for sid, payload in stores_struct.items():
+                        items = payload.get("items") or []
+                        store_rows.append((sid, payload, len(items)))
+                    store_rows.sort(key=lambda x: x[2], reverse=True)
+
+                    for _sid, payload, _count in store_rows:
+                        st = payload.get("store")
+                        items = payload.get("items") or []
+                        if not st:
+                            continue
+
+                        fav = " ★" if getattr(st, "is_favorite", False) else ""
+                        pri = getattr(st, "priority", 0) or 0
+                        output.insert(tk.END, f"{st.name}{fav} (priority={pri})\n")
+                        for it in items:
+                            qty = "" if it.quantity is None else str(it.quantity)
+                            unit = "" if it.unit is None else str(it.unit)
+                            mapped = "" if it.item_id is None else f" [item_id={it.item_id}]"
+                            output.insert(tk.END, f"  - {it.display_name} {qty} {unit}{mapped}\n")
+                        output.insert(tk.END, "\n")
+
+                unassigned = plan.get("unassigned") or []
+                if unassigned:
+                    output.insert(tk.END, "Unassigned:\n")
+                    for it in unassigned:
                         qty = "" if it.quantity is None else str(it.quantity)
                         unit = "" if it.unit is None else str(it.unit)
                         mapped = "" if it.item_id is None else f" [item_id={it.item_id}]"
                         output.insert(tk.END, f"  - {it.display_name} {qty} {unit}{mapped}\n")
                     output.insert(tk.END, "\n")
 
-            unassigned = plan.get("unassigned") or []
-            if unassigned:
-                output.insert(tk.END, "Unassigned:\n")
-                for it in unassigned:
-                    qty = "" if it.quantity is None else str(it.quantity)
-                    unit = "" if it.unit is None else str(it.unit)
-                    mapped = "" if it.item_id is None else f" [item_id={it.item_id}]"
-                    output.insert(tk.END, f"  - {it.display_name} {qty} {unit}{mapped}\n")
-                output.insert(tk.END, "\n")
+            threading.Thread(target=worker, daemon=True).start()
 
-        ttk.Button(header, text="Refresh", command=self._safe_call(render_plan)).pack(side=tk.RIGHT)
+        refresh_btn.config(command=self._safe_call(render_plan))
 
         render_plan()
 
