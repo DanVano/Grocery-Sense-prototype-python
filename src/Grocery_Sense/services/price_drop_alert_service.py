@@ -364,7 +364,10 @@ class PriceDropAlertService:
         Returns number of alerts inserted.
         """
         self._ensure_tables()
-        since = (datetime.now() - timedelta(days=int(max(1, days)))).strftime("%Y-%m-%d")
+        # Use UTC to match how price dates are stored (_now_utc_iso / SQLite
+        # date('now')); a local-time cutoff was off by a day near midnight / in
+        # non-UTC zones.
+        since = (datetime.now(timezone.utc) - timedelta(days=int(max(1, days)))).strftime("%Y-%m-%d")
 
         inserted = 0
         with connection_scope() as conn:
