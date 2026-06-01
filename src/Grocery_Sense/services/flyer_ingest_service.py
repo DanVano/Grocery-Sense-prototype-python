@@ -134,7 +134,7 @@ class FlyerIngestService:
 
         assets_count = 0
         raw_count = 0
-        deals_count = 0
+        deal_rows: List[Dict[str, Any]] = []
 
         mapper = self._get_mapper_if_available() if try_item_mapping else None
 
@@ -219,30 +219,34 @@ class FlyerIngestService:
                         norm_unit = norm.norm_unit
                         norm_note = f"{norm.note};{adj.deal_note};flyer"
 
-                self.repo.add_deal(
-                    flyer_id=flyer_id,
-                    store_id=store_id,
-                    asset_id=asset_id,
-                    page_index=d.get("page_index"),
+                deal_rows.append({
+                    "flyer_id": flyer_id,
+                    "store_id": store_id,
+                    "asset_id": asset_id,
+                    "page_index": d.get("page_index"),
 
-                    title=title,
-                    description=description,
-                    price_text=price_text,
+                    "title": title,
+                    "description": description,
+                    "price_text": price_text,
 
-                    deal_qty=float(adj.quantity) if adj.quantity is not None else None,
-                    deal_total=float(adj.line_total) if adj.line_total is not None else None,
-                    unit_price=float(adj.unit_price) if adj.unit_price is not None else None,
-                    unit=observed_unit,
+                    "deal_qty": float(adj.quantity) if adj.quantity is not None else None,
+                    "deal_total": float(adj.line_total) if adj.line_total is not None else None,
+                    "unit_price": float(adj.unit_price) if adj.unit_price is not None else None,
+                    "unit": observed_unit,
 
-                    norm_unit_price=float(norm_unit_price) if norm_unit_price is not None else None,
-                    norm_unit=norm_unit,
-                    norm_note=norm_note,
+                    "norm_unit_price": float(norm_unit_price) if norm_unit_price is not None else None,
+                    "norm_unit": norm_unit,
+                    "norm_note": norm_note,
 
-                    item_id=item_id,
-                    mapping_confidence=float(map_conf) if map_conf is not None else None,
-                    confidence=d.get("confidence"),
-                )
-                deals_count += 1
+                    "item_id": item_id,
+                    "mapping_confidence": float(map_conf) if map_conf is not None else None,
+                    "confidence": d.get("confidence"),
+                })
+
+        deals_count = self.repo.add_deals(deal_rows)
+
+        if mapper is not None:
+            mapper.flush_learned_aliases()
 
         return FlyerIngestResult(
             flyer_id=flyer_id,
@@ -296,7 +300,7 @@ class FlyerIngestService:
 
         mapper = self._get_mapper_if_available() if try_item_mapping else None
 
-        deals_count = 0
+        deal_rows: List[Dict[str, Any]] = []
         for rec in data:
             if not isinstance(rec, dict):
                 continue
@@ -345,30 +349,34 @@ class FlyerIngestService:
                     norm_unit = norm.norm_unit
                     norm_note = f"{norm.note};{adj.deal_note};dealrecords"
 
-            self.repo.add_deal(
-                flyer_id=flyer_id,
-                store_id=store_id,
-                asset_id=None,
-                page_index=rec.get("page_index"),
+            deal_rows.append({
+                "flyer_id": flyer_id,
+                "store_id": store_id,
+                "asset_id": None,
+                "page_index": rec.get("page_index"),
 
-                title=title,
-                description=description,
-                price_text=price_text,
+                "title": title,
+                "description": description,
+                "price_text": price_text,
 
-                deal_qty=float(adj.quantity) if adj.quantity is not None else None,
-                deal_total=float(adj.line_total) if adj.line_total is not None else None,
-                unit_price=float(adj.unit_price) if adj.unit_price is not None else None,
-                unit=observed_unit,
+                "deal_qty": float(adj.quantity) if adj.quantity is not None else None,
+                "deal_total": float(adj.line_total) if adj.line_total is not None else None,
+                "unit_price": float(adj.unit_price) if adj.unit_price is not None else None,
+                "unit": observed_unit,
 
-                norm_unit_price=float(norm_unit_price) if norm_unit_price is not None else None,
-                norm_unit=norm_unit,
-                norm_note=norm_note,
+                "norm_unit_price": float(norm_unit_price) if norm_unit_price is not None else None,
+                "norm_unit": norm_unit,
+                "norm_note": norm_note,
 
-                item_id=item_id,
-                mapping_confidence=float(map_conf) if map_conf is not None else None,
-                confidence=rec.get("confidence"),
-            )
-            deals_count += 1
+                "item_id": item_id,
+                "mapping_confidence": float(map_conf) if map_conf is not None else None,
+                "confidence": rec.get("confidence"),
+            })
+
+        deals_count = self.repo.add_deals(deal_rows)
+
+        if mapper is not None:
+            mapper.flush_learned_aliases()
 
         return FlyerIngestResult(
             flyer_id=flyer_id,

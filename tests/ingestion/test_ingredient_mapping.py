@@ -134,10 +134,15 @@ class TestAutoLearn:
         item = create_item(canonical_name="chicken breast")
         mapper = _make_mapper()
 
-        # First call: fuzzy at score 1.0 → above learn_threshold=0.90 → alias cached.
+        # First call: fuzzy at score 1.0 → above learn_threshold=0.90 → learn
+        # is BUFFERED (auto-learns are written on flush, not inline, to avoid
+        # per-line commits during ingest — see M11 / Fix A).
         first = mapper.map_to_item("chicken breast")
         assert first.method == "fuzzy"
         assert first.confidence >= 0.90
+
+        # Flush persists the buffered learn in a single transaction.
+        mapper.flush_learned_aliases()
 
         # Second call: alias cache hit short-circuits fuzzy.
         second = mapper.map_to_item("chicken breast")

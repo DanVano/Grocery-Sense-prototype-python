@@ -29,6 +29,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -81,18 +82,24 @@ def _load_dotenv_once() -> None:
     for parent in here.parents:
         candidate = parent / ".env"
         if candidate.exists():
+            # Fail loud if the .env exists but can't be read/decoded — a swallowed
+            # read error would surface only later as a confusing "missing Azure
+            # credentials" far from the real cause.
             try:
-                for line in candidate.read_text(encoding="utf-8").splitlines():
-                    line = line.strip()
-                    if not line or line.startswith("#") or "=" not in line:
-                        continue
-                    k, _, v = line.partition("=")
-                    k = k.strip()
-                    v = v.strip().strip('"').strip("'")
-                    if k and k not in os.environ:
-                        os.environ[k] = v
-            except Exception:
-                pass
+                text = candidate.read_text(encoding="utf-8")
+            except OSError as e:
+                raise RuntimeError(
+                    f"Found .env at {candidate} but could not read it: {e}"
+                ) from e
+            for line in text.splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue  # per-line leniency: skip comments / malformed lines
+                k, _, v = line.partition("=")
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k and k not in os.environ:
+                    os.environ[k] = v
             return
         if parent == repo_root:
             break
@@ -676,6 +683,14 @@ def ingest_analyzed_receipt_into_db(
             purchase_date = datetime.fromtimestamp(mtime, tz=timezone.utc).strftime("%Y-%m-%d")
         except Exception:
             purchase_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        # Disclose the inferred date: it feeds price-history windows, so a wrong
+        # date skews "usual price" / 6-month-low math. Don't pretend it's real.
+        import warnings
+        warnings.warn(
+            f"No transaction date on receipt '{file_path}'; using inferred date "
+            f"{purchase_date}. Price-history dating for this receipt is approximate.",
+            stacklevel=2,
+        )
 
     subtotal_val, subtotal_conf = _field_value(_pick_field(fields, ["Subtotal"]))
     tax_val, tax_conf = _field_value(_pick_field(fields, ["TotalTax", "Tax"]))
@@ -728,7 +743,12 @@ def ingest_analyzed_receipt_into_db(
             continue
 
         q_parsed = _safe_float(qty_val)
-        quantity = q_parsed if (q_parsed is not None and q_parsed > 0) else 1.0
+        qty_known = q_parsed is not None and q_parsed > 0
+        quantity = q_parsed if qty_known else 1.0
+        # OCR reported a quantity but it was unusable (<=0 / non-numeric): we
+        # default to 1, which distorts unit_price for weight-priced lines. Flag
+        # it rather than store a plausible-but-wrong per-unit price silently.
+        qty_reported_but_invalid = (qty_val is not None) and not qty_known
         unit_price = _currency_amount(unit_price_val)
         line_total = _currency_amount(total_price_val)
         discount = _currency_amount(discount_val)
@@ -751,6 +771,8 @@ def ingest_analyzed_receipt_into_db(
         unit_price = adj.unit_price
         line_total = adj.line_total
         deal_note = adj.deal_note
+        if qty_reported_but_invalid:
+            deal_note = f"{deal_note};qty_invalid_defaulted" if deal_note else "qty_invalid_defaulted"
 
         conf_candidates = [c for c in [desc_conf, qty_conf, unit_price_conf, total_price_conf, discount_conf] if isinstance(c, (int, float))]
         line_conf_float = (sum(float(x) for x in conf_candidates) / len(conf_candidates)) if conf_candidates else None
@@ -758,6 +780,10 @@ def ingest_analyzed_receipt_into_db(
 
         mapping = mapping_service.map_to_item(description)
         item_id, map_conf_1_5 = _upsert_item_from_mapping(description, mapping)
+        if not getattr(mapping, "item_id", None):
+            # A new item was just created — drop the cached candidate list so
+            # later lines in this receipt can fuzzy-match against it.
+            mapping_service.invalidate_choices()
 
         observed_unit = "each"
         guessed = unit_norm.guess_unit_from_text(description)
@@ -786,6 +812,11 @@ def ingest_analyzed_receipt_into_db(
             "deal_note": deal_note,
             "norm": norm,
         })
+
+    # Persist all buffered auto-learned aliases in one transaction now, BEFORE
+    # the receipt BEGIN below — keeps alias writes out of the receipt
+    # transaction and avoids a per-matched-line commit during the loop above.
+    mapping_service.flush_learned_aliases()
 
     # PASS 2 (transactional): insert receipts row + raw_json + line_items + prices
     # + dedupe links in one atomic BEGIN/COMMIT.
@@ -913,7 +944,50 @@ def ingest_analyzed_receipt_into_db(
 # Public entrypoints
 # =============================================================================
 
+# Per-file-hash ingest locks: serialize concurrent imports of the SAME receipt
+# file (a double-click, or two import windows) so the check-then-insert dedupe
+# can't race. Without this, two threads can both pass the file-hash dedupe before
+# either inserts, spending two Azure calls and creating a duplicate receipt. The
+# loser now blocks, then sees the winner's committed hash and returns a clean
+# was_duplicate outcome. Single-process desktop app, so an in-process lock is
+# sufficient (a multi-process story is out of scope).
+_ingest_locks_guard = threading.Lock()
+_ingest_locks: Dict[str, threading.Lock] = {}
+
+
+def _lock_for_file_hash(file_hash: str) -> threading.Lock:
+    with _ingest_locks_guard:
+        lk = _ingest_locks.get(file_hash)
+        if lk is None:
+            lk = threading.Lock()
+            _ingest_locks[file_hash] = lk
+        return lk
+
+
 def ingest_receipt_file_outcome(
+    file_path: str | Path,
+    *,
+    raw_json_dir: str | Path = "azure_raw_json",
+    locale: str = "en-US",
+    store_match_threshold: int = 85,
+    replace_existing: bool = False,
+) -> IngestOutcome:
+    """Serialize same-file imports under a per-file-hash lock, then run the
+    dedupe + ingest pipeline (see _ingest_receipt_outcome_impl)."""
+    p = Path(file_path)
+    if not p.exists():
+        raise FileNotFoundError(str(p))
+    with _lock_for_file_hash(_compute_file_sha256(p)):
+        return _ingest_receipt_outcome_impl(
+            file_path=file_path,
+            raw_json_dir=raw_json_dir,
+            locale=locale,
+            store_match_threshold=store_match_threshold,
+            replace_existing=replace_existing,
+        )
+
+
+def _ingest_receipt_outcome_impl(
     file_path: str | Path,
     *,
     raw_json_dir: str | Path = "azure_raw_json",

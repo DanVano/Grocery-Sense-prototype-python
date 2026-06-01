@@ -537,6 +537,56 @@ class FlyersRepo:
             conn.commit()
             return int(row[0])
 
+    def add_deals(self, deals: List[Dict[str, Any]]) -> int:
+        """Bulk-insert many flyer deals in ONE transaction (executemany).
+
+        Use this from ingest loops instead of calling add_deal once per deal,
+        which opened a fresh connection + commit per row. Each dict accepts the
+        same keys as add_deal's keyword arguments. Returns the number inserted.
+        """
+        if not deals:
+            return 0
+        self.ensure_schema()
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        rows = [
+            (
+                int(d["flyer_id"]),
+                int(d["asset_id"]) if d.get("asset_id") is not None else None,
+                int(d["store_id"]),
+                d.get("page_index"),
+                d.get("title"),
+                d.get("description"),
+                d.get("price_text"),
+                d.get("deal_qty"),
+                d.get("deal_total"),
+                d.get("unit_price"),
+                d.get("unit"),
+                d.get("norm_unit_price"),
+                d.get("norm_unit"),
+                d.get("norm_note"),
+                int(d["item_id"]) if d.get("item_id") is not None else None,
+                d.get("mapping_confidence"),
+                d.get("confidence"),
+                now,
+            )
+            for d in deals
+        ]
+        with connection_scope() as conn:
+            conn.executemany(
+                """
+                INSERT INTO flyer_deals (
+                    flyer_id, asset_id, store_id, page_index, title, description, price_text,
+                    deal_qty, deal_total, unit_price, unit,
+                    norm_unit_price, norm_unit, norm_note,
+                    item_id, mapping_confidence, confidence, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+            conn.commit()
+        return len(rows)
+
     # Back-compat alias (older code inserted a simplified "deals" list)
     def insert_deals(self, batch_id: int, store_id: int, deals: List[Dict[str, Any]]) -> int:
         """
@@ -547,7 +597,7 @@ class FlyersRepo:
         """
         if not deals:
             return 0
-        count = 0
+        rows: List[Dict[str, Any]] = []
         for d in deals:
             price = d.get("deal_total", None)
             if price is None:
@@ -558,19 +608,18 @@ class FlyersRepo:
                 deal_total = _parse_price_str(price)
             else:
                 deal_total = None
-            self.add_deal(
-                flyer_id=batch_id,
-                store_id=store_id,
-                page_index=d.get("page_index", None),
-                title=d.get("title", None),
-                description=d.get("description", None),
-                price_text=d.get("price_text", None),
-                deal_total=deal_total,
-                unit_price=d.get("unit_price", None),
-                unit=d.get("unit", None),
-            )
-            count += 1
-        return count
+            rows.append({
+                "flyer_id": batch_id,
+                "store_id": store_id,
+                "page_index": d.get("page_index", None),
+                "title": d.get("title", None),
+                "description": d.get("description", None),
+                "price_text": d.get("price_text", None),
+                "deal_total": deal_total,
+                "unit_price": d.get("unit_price", None),
+                "unit": d.get("unit", None),
+            })
+        return self.add_deals(rows)
 
     def list_deals_for_flyer(
         self,

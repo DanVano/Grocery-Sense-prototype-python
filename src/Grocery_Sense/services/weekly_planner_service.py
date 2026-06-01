@@ -132,6 +132,10 @@ class WeeklyPlannerService:
         # ✅ best-effort mapping for each aggregated ingredient
         if map_ingredients:
             mapper = self._get_mapper()
+            # The mapper instance is reused across plan builds; refresh its
+            # cached candidate list so items added since the last build are
+            # matchable.
+            mapper.invalidate_choices()
             for ing in planned_ingredients:
                 res = mapper.map_to_item(ing.name)
                 if res and res.item_id:
@@ -142,6 +146,8 @@ class WeeklyPlannerService:
                 else:
                     ing.match_confidence = float(res.confidence) if res else None
                     ing.match_method = str(res.method) if res else "none"
+            # Persist any high-confidence auto-learns in one transaction.
+            mapper.flush_learned_aliases()
 
         plan = WeeklyPlan(
             suggestions=list(suggestions),
