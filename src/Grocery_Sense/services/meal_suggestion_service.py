@@ -58,6 +58,17 @@ def _lower_list(values: Optional[Iterable[str]]) -> List[str]:
 
 def _extract_core_ingredients(recipe: Dict[str, Any]) -> List[str]:
     ings = recipe.get("ingredients") or []
+    if isinstance(ings, str):
+        name = recipe.get("id") or recipe.get("name") or "?"
+        raise TypeError(
+            f"Recipe {name!r} has a string 'ingredients' field; expected a list."
+        )
+    if not isinstance(ings, (list, tuple)):
+        name = recipe.get("id") or recipe.get("name") or "?"
+        raise TypeError(
+            f"Recipe {name!r} has a non-list 'ingredients' field of type "
+            f"{type(ings).__name__}."
+        )
     return [str(i).strip() for i in ings if str(i).strip()]
 
 
@@ -284,8 +295,10 @@ def _fetch_deals_for_ingredients(
                 JOIN flyer_batches b ON b.id = d.flyer_id
                 LEFT JOIN stores s ON s.id = d.store_id
                 WHERE b.status = 'active'
-                  AND b.valid_from <= ?
-                  AND b.valid_to   >= ?
+                  AND b.valid_from IS NOT NULL AND b.valid_to IS NOT NULL
+                  AND TRIM(b.valid_from) <> '' AND TRIM(b.valid_to) <> ''
+                  AND date(b.valid_from) <= date(?)
+                  AND date(b.valid_to)   >= date(?)
                 LIMIT 5000
                 """,
                 (today, today),

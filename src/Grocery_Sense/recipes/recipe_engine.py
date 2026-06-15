@@ -234,12 +234,18 @@ def _recipe_satisfies_profile(recipe: Recipe, profile: Dict[str, Any]) -> bool:
     # if diet == "vegan" and "vegan" not in recipe.tags:
     #     return False
 
-    # You can also map special restrictions like "no_pork" to term checks here.
-    for r in restrictions:
-        if r == "no_pork" and re.search(r"\bpork\b", ingredients_text, flags=re.IGNORECASE):
-            return False
-        if r == "no_beef" and re.search(r"\bbeef\b", ingredients_text, flags=re.IGNORECASE):
-            return False
+    # Map "no_<ingredient>" restrictions to hard ingredient bans (e.g. "no_pork",
+    # "no_chicken"). "no_meat"/"no_fish" are umbrella diet flags, not single-
+    # ingredient bans, so they are excluded here.
+    for restriction in restrictions:
+        if restriction.startswith("no_"):
+            term = restriction[3:].strip()
+            if term and term not in ("meat", "fish") and re.search(
+                rf"\b{re.escape(term)}\b",
+                ingredients_text,
+                flags=re.IGNORECASE,
+            ):
+                return False
 
     return True
 
