@@ -213,6 +213,9 @@ class TestAliasCache:
         mapper.map_to_item("rice")
         mapper.map_to_item("rice")
 
+        # mark_seen calls are buffered in _pending_touches; drain before asserting.
+        mapper.flush_learned_aliases()
+
         aliases = aliases_repo.list_all()
         assert len(aliases) == 1
         # upsert_alias starts times_seen=1, mark_seen increments twice more.

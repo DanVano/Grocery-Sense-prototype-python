@@ -88,6 +88,9 @@ class IngredientMappingService:
         # via flush_learned_aliases(); committing one alias per matched line
         # inside an ingest loop caused write-amplification and DB-lock contention.
         self._pending_learns: List[Tuple[str, int, float, str]] = []
+        # Alias cache hits also defer their mark_seen bump to the same flush so
+        # N cache hits during a mapping loop don't open N separate write txns.
+        self._pending_touches: List[str] = []
 
     # ---------------- Candidate cache / deferred writes ----------------
 
@@ -114,10 +117,12 @@ class IngredientMappingService:
         weekly plan); for receipt ingest, flush BEFORE opening the receipt
         transaction so alias writes stay outside it.
         """
-        if not self._pending_learns:
+        if not self._pending_learns and not self._pending_touches:
             return
         pending = self._pending_learns
         self._pending_learns = []
+        touches = self._pending_touches
+        self._pending_touches = []
         with connection_scope() as conn:
             for alias_text, item_id, confidence, source in pending:
                 self.aliases_repo.upsert_alias(
@@ -127,6 +132,8 @@ class IngredientMappingService:
                     source=source,
                     conn=conn,
                 )
+            for alias_text in touches:
+                self.aliases_repo.mark_seen(alias_text, conn=conn)
 
     # ---------------- Normalization ----------------
 
@@ -176,7 +183,7 @@ class IngredientMappingService:
         # 1) Alias cache hit
         alias = self.aliases_repo.get_by_alias(normalized)
         if alias:
-            self.aliases_repo.mark_seen(normalized)
+            self._pending_touches.append(normalized)
             return MappingResult(
                 item_id=alias.item_id,
                 canonical_name=None,  # caller can look up canonical name by id if needed
