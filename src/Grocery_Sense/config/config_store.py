@@ -732,12 +732,29 @@ def cache_get(key: str, *, max_age_days: int = 7) -> Optional[Any]:
     return entry.get("value")
 
 
-def cache_set(key: str, value: Any) -> None:
-    """Store *value* in the cache under *key*, tagged with the current timestamp."""
-    import time
-    cache = _load_cache()
-    cache[key] = {"stored_at": time.time(), "value": value}
-    _save_cache(cache)
+def _prune_expired_locked(cache: dict, *, max_age_days: int, now: float) -> None:
+    stale = [
+        k for k, v in cache.items()
+        if not isinstance(v, dict)
+        or (now - v.get("stored_at", 0)) < 0
+        or (now - v.get("stored_at", 0)) / 86400.0 > max_age_days
+    ]
+    for k in stale:
+        del cache[k]
+
+
+def cache_set(key: str, value: Any, *, max_age_days: int = 7) -> None:
+    """Store *value* in the cache under *key*, tagged with the current timestamp.
+
+    Expired entries (older than max_age_days) are pruned on every write.
+    """
+    import time as _time
+    with _deals_cache_lock:
+        now = _time.time()
+        cache = dict(_load_cache())
+        cache[key] = {"stored_at": now, "value": value}
+        _prune_expired_locked(cache, max_age_days=max_age_days, now=now)
+        _save_cache(cache)
 
 
 def reset_secondary_member_to_household_baseline(member_id: int) -> bool:

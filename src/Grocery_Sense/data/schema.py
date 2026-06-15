@@ -245,7 +245,7 @@ def create_tables(conn: sqlite3.Connection) -> None:
     cur.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_shopping_list_active
-        ON shopping_list(is_active, planned_store_id);
+        ON shopping_list(is_active, is_deleted, is_checked_off, planned_store_id);
         """
     )
 
@@ -461,6 +461,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
     for col, sql in migrations:
         if col not in existing:
             cur.execute(sql)
+
+    cur.execute("DROP INDEX IF EXISTS idx_shopping_list_active")
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_shopping_list_active "
+        "ON shopping_list(is_active, is_deleted, is_checked_off, planned_store_id)"
+    )
 
     conn.commit()
     _migrate_receipt_support_tables(conn)

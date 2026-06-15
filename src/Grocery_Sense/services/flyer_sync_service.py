@@ -51,14 +51,18 @@ def _read_last_sync_utc() -> Optional[datetime.datetime]:
 
 
 def _write_last_sync_utc(dt: datetime.datetime) -> None:
+    import os as _os
     _META_FILE.parent.mkdir(parents=True, exist_ok=True)
     # Atomic write so a crash mid-flush doesn't leave an empty meta file
     # (which would make `needs_sync()` fire every launch).
     tmp = _META_FILE.with_suffix(_META_FILE.suffix + ".tmp")
-    tmp.write_text(
-        json.dumps({"last_sync_utc": dt.isoformat(timespec="seconds")}),
-        encoding="utf-8",
-    )
+    with tmp.open("w", encoding="utf-8") as f:
+        json.dump({"last_sync_utc": dt.isoformat(timespec="seconds")}, f)
+        f.flush()
+        try:
+            _os.fsync(f.fileno())
+        except Exception:
+            pass
     tmp.replace(_META_FILE)
 
 

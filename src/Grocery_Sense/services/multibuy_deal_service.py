@@ -131,7 +131,10 @@ class MultiBuyDealService:
             # If quantity is a multiple of bundle qty, keep q and compute implied line total
             implied_total = eff * q
             implied_total = implied_total - (disc or 0.0)
-            return DealAdjusted(quantity=q, unit_price=eff, line_total=implied_total, deal_note=f"bundle({bundle_qty}/${bundle_total})_from_text")
+            deal_note = f"bundle({bundle_qty}/${bundle_total})_from_text"
+            if q < bundle_qty:
+                deal_note += ";qty_below_bundle_unverified"
+            return DealAdjusted(quantity=q, unit_price=eff, line_total=implied_total, deal_note=deal_note)
 
         # 3) "2 @ 4.00" means 2 units at $4 each
         at = self._parse_at_price(desc)
