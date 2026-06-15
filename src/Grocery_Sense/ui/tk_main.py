@@ -58,7 +58,7 @@ class GrocerySenseApp(tk.Tk):
         self.title("Grocery Sense - Prototype")
         self.geometry("980x700")
 
-        initialize_database()
+        self._db_ready = threading.Event()
 
         self.shopping_list_service = ShoppingListService()
         self.meal_suggestion_service = MealSuggestionService(
@@ -79,8 +79,7 @@ class GrocerySenseApp(tk.Tk):
         # mainloop is pumping, so any `after(0, ...)` callbacks dispatched from
         # workers don't fire against an unrealized window.
         self._flyer_scheduler = FlyerSyncScheduler(on_sync_complete=self._on_flyer_sync_done)
-        self.after(500, self._flyer_scheduler.start)
-        self.after(1500, lambda: threading.Thread(target=self._check_price_drop_alerts, daemon=True).start())
+        self.after(200, self._init_db_async)
 
         # Cancel background timers cleanly on window close.
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -93,6 +92,26 @@ class GrocerySenseApp(tk.Tk):
         except Exception:
             pass
         self.destroy()
+
+    def _init_db_async(self) -> None:
+        """Initialize/migrate the DB off the main thread; then start the alert check."""
+        self._log("Initializing database schema…")
+
+        def worker() -> None:
+            try:
+                initialize_database()
+                self._db_ready.set()
+                self.after(0, lambda: self._log("Database ready."))
+                self.after(0, self._flyer_scheduler.start)  # safe: DB is ready
+                threading.Thread(
+                    target=self._check_price_drop_alerts, daemon=True
+                ).start()
+            except Exception as exc:
+                self.after(
+                    0, lambda e=exc: messagebox.showerror("Error", str(e))
+                )
+
+        threading.Thread(target=worker, daemon=True).start()
 
     # ------------------------------------------------------------------
     # Base UI helpers
@@ -257,9 +276,9 @@ class GrocerySenseApp(tk.Tk):
         def wrapper():
             try:
                 func()
-            except Exception:
+            except Exception as exc:
                 self._log_exception("ERROR:")
-                messagebox.showerror("Error", traceback.format_exc())
+                messagebox.showerror("Error", str(exc) or exc.__class__.__name__)
         return wrapper
 
     # ------------------------------------------------------------------
@@ -506,6 +525,8 @@ class GrocerySenseApp(tk.Tk):
                 win.after(0, lambda: _populate(None, exc))
 
         def _populate(results, error):
+            if not win.winfo_exists():
+                return
             if error is not None:
                 status_var.set(f"Error: {error}")
                 return
@@ -555,6 +576,8 @@ class GrocerySenseApp(tk.Tk):
                     win.after(0, lambda: _populate(None, exc))
 
             def _populate(plan, error):
+                if not win.winfo_exists():
+                    return
                 build_btn.config(state="normal")
                 summary_box.delete("1.0", tk.END)
                 if error is not None:
@@ -629,6 +652,8 @@ class GrocerySenseApp(tk.Tk):
                     win.after(0, lambda e=exc: _render(None, e))
 
             def _render(plan, error) -> None:
+                if not win.winfo_exists():
+                    return
                 refresh_btn.config(state="normal")
                 output.delete("1.0", tk.END)
                 if error is not None:

@@ -270,14 +270,15 @@ class ReceiptImportWindow(tk.Toplevel):
 
             row = self._rows[i]
 
-            # If already imported, just count it as done
+            # If already imported, just count it as done.
+            # receipt_id is set by the main thread before the worker starts and
+            # is never modified by the worker, so this read is safe.
             if row.receipt_id is not None:
                 done += 1
                 self._queue.put(("progress", {"done": done}))
                 continue
 
-            row.status = "Processing..."
-            self._queue.put(("row_update", {"index": i, "status": row.status}))
+            self._queue.put(("row_update", {"index": i, "status": "Processing..."}))
 
             try:
                 outcome = ingest_receipt_file_outcome(
@@ -288,10 +289,10 @@ class ReceiptImportWindow(tk.Toplevel):
                     replace_existing=replace_existing,
                 )
 
-                row.receipt_id = int(outcome.receipt_id)
+                receipt_id = int(outcome.receipt_id)
 
                 if outcome.was_duplicate and not outcome.replaced_existing:
-                    row.status = "Duplicate (skipped)"
+                    new_status = "Duplicate (skipped)"
                     self._queue.put(
                         (
                             "log",
@@ -301,7 +302,7 @@ class ReceiptImportWindow(tk.Toplevel):
                         )
                     )
                 elif outcome.replaced_existing:
-                    row.status = "Replaced + Imported"
+                    new_status = "Replaced + Imported"
                     self._queue.put(
                         (
                             "log",
@@ -311,18 +312,17 @@ class ReceiptImportWindow(tk.Toplevel):
                         )
                     )
                 else:
-                    row.status = "Imported"
-                    self._queue.put(("log", {"message": f"Imported {row.path.name} -> receipt_id={row.receipt_id}"}))
+                    new_status = "Imported"
+                    self._queue.put(("log", {"message": f"Imported {row.path.name} -> receipt_id={receipt_id}"}))
 
                 self._queue.put(
-                    ("row_update", {"index": i, "status": row.status, "receipt_id": row.receipt_id})
+                    ("row_update", {"index": i, "status": new_status, "receipt_id": receipt_id})
                 )
 
             except Exception as e:
-                row.status = "Error"
-                row.error = str(e)
-                self._queue.put(("row_update", {"index": i, "status": row.status}))
-                self._queue.put(("log", {"message": f"ERROR importing {row.path.name}: {row.error}"}))
+                error_msg = str(e)
+                self._queue.put(("row_update", {"index": i, "status": "Error", "error": error_msg}))
+                self._queue.put(("log", {"message": f"ERROR importing {row.path.name}: {error_msg}"}))
 
             done += 1
             self._queue.put(("progress", {"done": done}))
@@ -338,11 +338,14 @@ class ReceiptImportWindow(tk.Toplevel):
                     idx = int(payload["index"])
                     status = payload.get("status", "")
                     rid = payload.get("receipt_id")
+                    err = payload.get("error")
 
                     if 0 <= idx < len(self._rows):
                         self._rows[idx].status = status
                         if rid is not None:
                             self._rows[idx].receipt_id = int(rid)
+                        if err is not None:
+                            self._rows[idx].error = err
 
                         # update tree row
                         row = self._rows[idx]
