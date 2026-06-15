@@ -79,12 +79,17 @@ def _load_dotenv_once() -> None:
     # repo root. Bound the search there so an unrelated ancestor .env (e.g. another
     # project's secrets) is never imported into this process.
     repo_root = here.parents[3] if len(here.parents) > 3 else here.parents[-1]
+    # Build candidates list from here up to repo_root (inclusive)
+    candidates = []
     for parent in here.parents:
+        candidates.append(parent)
+        if parent == repo_root:
+            break
+
+    # Traverse root-first so the repo-root .env wins over a nested one
+    for parent in reversed(candidates):
         candidate = parent / ".env"
         if candidate.exists():
-            # Fail loud if the .env exists but can't be read/decoded — a swallowed
-            # read error would surface only later as a confusing "missing Azure
-            # credentials" far from the real cause.
             try:
                 text = candidate.read_text(encoding="utf-8")
             except OSError as e:
@@ -94,15 +99,13 @@ def _load_dotenv_once() -> None:
             for line in text.splitlines():
                 line = line.strip()
                 if not line or line.startswith("#") or "=" not in line:
-                    continue  # per-line leniency: skip comments / malformed lines
+                    continue
                 k, _, v = line.partition("=")
                 k = k.strip()
                 v = v.strip().strip('"').strip("'")
                 if k and k not in os.environ:
                     os.environ[k] = v
             return
-        if parent == repo_root:
-            break
 
 
 def _ensure_dedupe_tables() -> None:
@@ -208,6 +211,24 @@ class IngestOutcome:
     existing_receipt_id: Optional[int] = None  # if duplicate, which one it matched
 
 
+def _retry_after_seconds(exc: object) -> Optional[float]:
+    """Parse Retry-After (delta-seconds) from an Azure error response, if present.
+    Returns None when the header is absent or non-numeric (e.g. HTTP-date form).
+    """
+    try:
+        response = getattr(exc, "response", None)
+        if response is None:
+            return None
+        headers = getattr(response, "headers", None) or {}
+        raw = headers.get("Retry-After") or headers.get("retry-after")
+        if raw is None:
+            return None
+        secs = float(str(raw).strip())
+        return secs if secs >= 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
 class AzureReceiptClient:
     def __init__(
         self,
@@ -237,6 +258,7 @@ class AzureReceiptClient:
         *,
         max_attempts: int = 3,
         base_delay: float = 2.0,
+        max_retry_after: float = 60.0,
     ) -> Tuple[str, Dict[str, Any]]:
         p = Path(file_path)
         if not p.exists():
@@ -266,13 +288,17 @@ class AzureReceiptClient:
                     raise
                 # Retriable: throttle (429) or server errors (5xx)
                 last_exc = exc
+                retry_after = _retry_after_seconds(exc)
 
             except ServiceRequestError as exc:
                 # Network-level transient error — always retriable
                 last_exc = exc
+                retry_after = None
 
             if attempt < max_attempts - 1:
-                delay = base_delay * (2 ** attempt)
+                backoff = base_delay * (2 ** attempt)
+                delay = max(backoff, retry_after) if retry_after is not None else backoff
+                delay = min(delay, max_retry_after)
                 time.sleep(delay)
 
         raise last_exc
@@ -753,12 +779,14 @@ def ingest_analyzed_receipt_into_db(
         line_total = _currency_amount(total_price_val)
         discount = _currency_amount(discount_val)
 
+        if line_total is not None and line_total < 0:
+            line_total = None
+        if unit_price is not None and unit_price < 0:
+            unit_price = None
         if unit_price is None and line_total is not None and quantity:
             unit_price = float(line_total) / float(quantity)
         if line_total is None and unit_price is not None and quantity:
             line_total = float(unit_price) * float(quantity)
-        if unit_price is not None and unit_price < 0:
-            unit_price = None
 
         adj = deals.adjust(
             description=description,
