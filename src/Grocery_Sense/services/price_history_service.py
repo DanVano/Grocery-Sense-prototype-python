@@ -46,6 +46,10 @@ class PriceHistoryService:
       - Classify a candidate price as "great / good / typical / expensive".
     """
 
+    def __init__(self) -> None:
+        from Grocery_Sense.services.unit_normalization_service import UnitNormalizationService
+        UnitNormalizationService().ensure_schema()
+
     # ---------- Item helpers ----------
 
     def get_or_create_item(

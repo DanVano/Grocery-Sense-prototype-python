@@ -126,8 +126,16 @@ class PriceDropAlertService:
 
     MIN_RECEIPT_SAMPLES_FOR_USUAL = 4
 
+    # Minimum six-month-low price (dollars) treated as a valid divisor. Doubles as
+    # the ZeroDivisionError guard for pct_above_low math AND a deliberate
+    # signal-suppressor for near-free items where a percentage swing is noise.
+    # Do NOT drop this floor in a refactor without replacing the divisor guard.
+    MIN_LOW_PRICE_FLOOR = 0.05
+
     def __init__(self, *, log=None) -> None:
+        from Grocery_Sense.services.unit_normalization_service import UnitNormalizationService
         self._log = log
+        UnitNormalizationService().ensure_schema()
         self._ensure_tables()
 
     # ----------------------- public API -----------------------
@@ -249,7 +257,7 @@ class PriceDropAlertService:
                 pct_below_usual = ((usual_price - best_unit) / usual_price) * 100.0
 
             pct_above_low: Optional[float] = None
-            if six_low is not None and six_low >= 0.05:
+            if six_low is not None and six_low >= self.MIN_LOW_PRICE_FLOOR:
                 pct_above_low = ((best_unit - six_low) / six_low) * 100.0
 
             last_seen_at_or_below = last_seen_map.get(item_id)
@@ -438,7 +446,7 @@ class PriceDropAlertService:
                     continue
 
                 six_low, six_low_when = six_low_map.get(item_id, (None, None))
-                pct_above_low = ((paid - six_low) / six_low) * 100.0 if (six_low and six_low >= 0.05) else None
+                pct_above_low = ((paid - six_low) / six_low) * 100.0 if (six_low and six_low >= self.MIN_LOW_PRICE_FLOOR) else None
 
                 notes = self._build_notes(
                     item_name=str(item.canonical_name),

@@ -403,7 +403,10 @@ class TestBatchHelpers:
         store = create_store(name="A")
         _seed_active_flyer_price(store.id, item.id, unit_price=3.5)
         m = get_active_flyer_prices_batch([item.id], [store.id])
-        assert m[(item.id, store.id)] == {"unit_price": 3.5, "source": "flyer"}
+        entry = m[(item.id, store.id)]
+        assert entry["unit_price"] == 3.5
+        assert entry["source"] == "flyer"
+        assert "unit" in entry
 
     def test_price_stats_batch(self, isolated_db):
         store = create_store(name="A")

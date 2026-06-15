@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, List, Optional, Tuple, Dict, Any
@@ -92,7 +93,8 @@ def get_prices_for_item(
     cutoff = (datetime.now(timezone.utc).date() - timedelta(days=int(since_days))).isoformat()
     sql = """
         SELECT id, item_id, store_id, receipt_id, flyer_source_id, source, date,
-               unit_price, unit, quantity, total_price, raw_name, confidence
+               unit_price, unit, quantity, total_price, raw_name, confidence,
+               norm_unit_price, norm_unit
         FROM prices
         WHERE item_id = ? AND date >= ?
     """
@@ -128,6 +130,8 @@ def get_prices_for_item(
                     total_price=r[10],
                     raw_name=r[11],
                     confidence=r[12],
+                    norm_unit_price=r[13],
+                    norm_unit=r[14],
                 )
             )
     if limit is not None:
@@ -142,7 +146,8 @@ def get_most_recent_price(item_id: int, store_id: Optional[int] = None) -> Optio
     """
     sql = """
         SELECT id, item_id, store_id, receipt_id, flyer_source_id, source, date,
-               unit_price, unit, quantity, total_price, raw_name, confidence
+               unit_price, unit, quantity, total_price, raw_name, confidence,
+               norm_unit_price, norm_unit
         FROM prices
         WHERE item_id = ?
     """
@@ -172,6 +177,8 @@ def get_most_recent_price(item_id: int, store_id: Optional[int] = None) -> Optio
             total_price=row[10],
             raw_name=row[11],
             confidence=row[12],
+            norm_unit_price=row[13],
+            norm_unit=row[14],
         )
 
 
@@ -678,7 +685,8 @@ def _price_cols() -> str:
     """Column list used by all batch SELECT statements (matches PricePoint field order)."""
     return (
         "id, item_id, store_id, receipt_id, flyer_source_id, source, date, "
-        "unit_price, unit, quantity, total_price, raw_name, confidence"
+        "unit_price, unit, quantity, total_price, raw_name, confidence, "
+        "norm_unit_price, norm_unit"
     )
 
 
@@ -688,6 +696,7 @@ def _row_to_price_point(r) -> PricePoint:
         flyer_source_id=r[4], source=r[5], date=r[6],
         unit_price=r[7], unit=r[8], quantity=r[9],
         total_price=r[10], raw_name=r[11], confidence=r[12],
+        norm_unit_price=r[13], norm_unit=r[14],
     )
 
 
@@ -784,7 +793,9 @@ def get_active_flyer_prices_batch(
             for chunk in _chunks(items):
                 item_ph = ",".join("?" * len(chunk))
                 sql = (
-                    "SELECT p.item_id, p.store_id, MIN(p.unit_price) AS unit_price "
+                    "SELECT p.item_id, p.store_id, "
+                    "       MIN(COALESCE(p.norm_unit_price, p.unit_price)) AS unit_price, "
+                    "       COALESCE(p.norm_unit, p.unit, 'each') AS unit "
                     "FROM prices p "
                     "JOIN flyer_sources fs ON fs.id = p.flyer_source_id "
                     "WHERE p.source = 'flyer' "
@@ -799,9 +810,11 @@ def get_active_flyer_prices_batch(
                     item_id = int(r[0])
                     store_id = int(r[1])
                     unit_price = float(r[2])
-                    out[(item_id, store_id)] = {"unit_price": unit_price, "source": "flyer"}
-    except Exception:
-        pass
+                    unit = str(r[3] or "each").strip().lower()
+                    out[(item_id, store_id)] = {"unit_price": unit_price, "unit": unit, "source": "flyer"}
+    except sqlite3.OperationalError as e:
+        if "flyer_sources" not in str(e).lower():
+            raise
     return out
 
 
@@ -824,7 +837,7 @@ def get_price_stats_batch(
         for chunk in _chunks(items):
             placeholders = ",".join("?" * len(chunk))
             sql = (
-                "SELECT item_id, MIN(unit_price), MAX(unit_price), AVG(unit_price), COUNT(*) "
+                "SELECT item_id, MIN(COALESCE(norm_unit_price, unit_price)), MAX(COALESCE(norm_unit_price, unit_price)), AVG(COALESCE(norm_unit_price, unit_price)), COUNT(*) "
                 "FROM prices "
                 f"WHERE item_id IN ({placeholders}) "
                 "  AND unit_price IS NOT NULL "
@@ -874,7 +887,7 @@ def get_recent_avg_unit_price_by_store_batch(
             item_ph = ",".join("?" * len(chunk))
             if lim is None:
                 sql = (
-                    "SELECT item_id, store_id, AVG(unit_price) "
+                    "SELECT item_id, store_id, AVG(COALESCE(norm_unit_price, unit_price)) "
                     "FROM prices "
                     f"WHERE item_id IN ({item_ph}) AND store_id IN ({store_ph}) "
                     "  AND date >= ? AND unit_price IS NOT NULL "
@@ -883,8 +896,8 @@ def get_recent_avg_unit_price_by_store_batch(
                 params: Tuple[Any, ...] = (*chunk, *stores, cutoff)
             else:
                 sql = (
-                    "SELECT item_id, store_id, AVG(unit_price) FROM ( "
-                    "  SELECT item_id, store_id, unit_price, "
+                    "SELECT item_id, store_id, AVG(COALESCE(norm_unit_price, unit_price)) FROM ( "
+                    "  SELECT item_id, store_id, norm_unit_price, unit_price, "
                     "         ROW_NUMBER() OVER ( "
                     "             PARTITION BY item_id, store_id ORDER BY date DESC, id DESC "
                     "         ) AS rn "
@@ -922,15 +935,15 @@ def get_recent_avg_unit_price_global_batch(
             item_ph = ",".join("?" * len(chunk))
             if lim is None:
                 sql = (
-                    "SELECT item_id, AVG(unit_price) FROM prices "
+                    "SELECT item_id, AVG(COALESCE(norm_unit_price, unit_price)) FROM prices "
                     f"WHERE item_id IN ({item_ph}) AND date >= ? AND unit_price IS NOT NULL "
                     "GROUP BY item_id"
                 )
                 params: Tuple[Any, ...] = (*chunk, cutoff)
             else:
                 sql = (
-                    "SELECT item_id, AVG(unit_price) FROM ( "
-                    "  SELECT item_id, unit_price, "
+                    "SELECT item_id, AVG(COALESCE(norm_unit_price, unit_price)) FROM ( "
+                    "  SELECT item_id, norm_unit_price, unit_price, "
                     "         ROW_NUMBER() OVER ( "
                     "             PARTITION BY item_id ORDER BY date DESC, id DESC "
                     "         ) AS rn "

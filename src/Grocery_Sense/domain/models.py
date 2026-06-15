@@ -80,6 +80,8 @@ class PricePoint:
     flyer_source_id: Optional[int] = None
     raw_name: Optional[str] = None
     confidence: Optional[int] = None  # 1–5
+    norm_unit_price: Optional[float] = None
+    norm_unit: Optional[str] = None
 
 
 # ---------- Price stats ----------

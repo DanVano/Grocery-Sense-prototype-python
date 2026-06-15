@@ -94,6 +94,9 @@ class PlanningService:
           8) Compute basket total
           9) Compute baseline "all at favorite store" and estimated savings
         """
+        from Grocery_Sense.services.unit_normalization_service import UnitNormalizationService
+        UnitNormalizationService().ensure_schema()
+
         items = self._shopping.get_active_items(include_checked_off=False, store_id=None)
         stores = list_stores()
 

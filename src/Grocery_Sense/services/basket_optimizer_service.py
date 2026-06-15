@@ -32,6 +32,10 @@ DEFAULT_EXCLUDE_SAFE_PHRASES: List[str] = [
     "olive oil",
 ]
 
+def _positive(v: object) -> bool:
+    """Return True only for a strictly positive numeric price."""
+    return isinstance(v, (int, float)) and v > 0
+
 def _norm(s: str) -> str:
     return (s or "").strip().lower()
 
@@ -442,26 +446,35 @@ class BasketOptimizerService:
         flyer = flyer_map.get((store_id, item_id))
         if flyer:
             unit_price, unit = flyer
-            return PricePick(store_id=store_id, store_name=store_name,
-                             unit_price=unit_price, unit=unit, source="flyer")
+            if _positive(unit_price):
+                return PricePick(store_id=store_id, store_name=store_name,
+                                 unit_price=unit_price, unit=unit, source="flyer")
 
         # 2) Most recent store-specific history
         pr = store_history.get((item_id, store_id))
-        if pr and getattr(pr, "unit_price", None) is not None:
+        if pr and _positive(getattr(pr, "unit_price", None)):
+            up = getattr(pr, "norm_unit_price", None)
+            if up is None:
+                up = pr.unit_price
+            unit = str(getattr(pr, "norm_unit", None) or getattr(pr, "unit", None) or "each").strip().lower()
             return PricePick(
                 store_id=store_id, store_name=store_name,
-                unit_price=float(pr.unit_price),
-                unit=str(getattr(pr, "unit", None) or "each").strip().lower(),
+                unit_price=float(up),
+                unit=unit,
                 source="history_store",
             )
 
         # 3) Global any-store fallback
         pr2 = global_history.get(item_id)
-        if pr2 and getattr(pr2, "unit_price", None) is not None:
+        if pr2 and _positive(getattr(pr2, "unit_price", None)):
+            up2 = getattr(pr2, "norm_unit_price", None)
+            if up2 is None:
+                up2 = pr2.unit_price
+            unit2 = str(getattr(pr2, "norm_unit", None) or getattr(pr2, "unit", None) or "each").strip().lower()
             return PricePick(
                 store_id=store_id, store_name=store_name,
-                unit_price=float(pr2.unit_price),
-                unit=str(getattr(pr2, "unit", None) or "each").strip().lower(),
+                unit_price=float(up2),
+                unit=unit2,
                 source="history_any",
             )
 
@@ -487,27 +500,36 @@ class BasketOptimizerService:
         flyer = flyer_map.get((store_id, item_id))
         if flyer:
             unit_price, unit = flyer
-            return PricePick(store_id=store_id, store_name=store_name, unit_price=unit_price, unit=unit, source="flyer")
+            if _positive(unit_price):
+                return PricePick(store_id=store_id, store_name=store_name, unit_price=unit_price, unit=unit, source="flyer")
 
         # 2) Most recent store-specific history
         pr = prices_repo.get_most_recent_price(item_id=item_id, store_id=store_id)
-        if pr and getattr(pr, "unit_price", None) is not None:
+        if pr and _positive(getattr(pr, "unit_price", None)):
+            up = getattr(pr, "norm_unit_price", None)
+            if up is None:
+                up = pr.unit_price
+            unit = str(getattr(pr, "norm_unit", None) or getattr(pr, "unit", None) or "each").strip().lower()
             return PricePick(
                 store_id=store_id,
                 store_name=store_name,
-                unit_price=float(pr.unit_price),
-                unit=str(getattr(pr, "unit", None) or "each").strip().lower(),
+                unit_price=float(up),
+                unit=unit,
                 source="history_store",
             )
 
         # 3) Most recent any-store history (global estimate fallback)
         pr2 = prices_repo.get_most_recent_price(item_id=item_id, store_id=None)
-        if pr2 and getattr(pr2, "unit_price", None) is not None:
+        if pr2 and _positive(getattr(pr2, "unit_price", None)):
+            up2 = getattr(pr2, "norm_unit_price", None)
+            if up2 is None:
+                up2 = pr2.unit_price
+            unit2 = str(getattr(pr2, "norm_unit", None) or getattr(pr2, "unit", None) or "each").strip().lower()
             return PricePick(
                 store_id=store_id,
                 store_name=store_name,
-                unit_price=float(pr2.unit_price),
-                unit=str(getattr(pr2, "unit", None) or "each").strip().lower(),
+                unit_price=float(up2),
+                unit=unit2,
                 source="history_any",
             )
 
