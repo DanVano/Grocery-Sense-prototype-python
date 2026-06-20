@@ -43,6 +43,9 @@ class SuggestedMeal:
     variety_score: float
     reasons: list[str]
     explanation: str | None = None
+    cost_total: float | None = None         # sum of baseline prices for priced ingredients
+    cost_per_serving: float | None = None   # cost_total / servings
+    cost_known_ratio: float = 0.0           # fraction of ingredients with a known price
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +250,38 @@ def _compute_variety_score(
     return 0.0
 
 
+def _compute_cost_estimate(
+    recipe: Dict[str, Any],
+    baseline_map: Dict[str, Optional[float]],
+) -> Tuple[Optional[float], Optional[float], float]:
+    """
+    Returns (cost_total, cost_per_serving, known_ratio).
+
+    Estimates cost as sum of baseline_map prices for each ingredient (1 unit each —
+    ponytail: recipes store string ingredients, not qty+unit; this is an estimate).
+    known_ratio < 1 means the displayed cost is partial — callers must disclose this.
+    """
+    ingredients = _extract_core_ingredients(recipe)
+    if not ingredients:
+        return None, None, 0.0
+
+    servings = recipe.get("servings")
+    total = 0.0
+    known = 0
+    for ing in ingredients:
+        price = baseline_map.get(ing.lower())
+        if price is not None:
+            total += price
+            known += 1
+
+    ratio = known / len(ingredients)
+    if known == 0:
+        return None, None, 0.0
+
+    per_serving = (total / int(servings)) if servings and int(servings) > 0 else None
+    return total, per_serving, ratio
+
+
 def _collect_all_ingredients(recipes: Sequence[Dict[str, Any]]) -> List[str]:
     seen = set()
     result: List[str] = []
@@ -441,6 +476,7 @@ class MealSuggestionService:
             )
             preference_score = _compute_preference_score(r, profile)
             variety_score = _compute_variety_score(r, recently_used_recipe_ids)
+            cost_total, cost_per_serving, cost_known_ratio = _compute_cost_estimate(r, baseline_map)
 
             # Choice C weighting:
             #  - price_score       -> 0.5
@@ -463,6 +499,9 @@ class MealSuggestionService:
                     preference_score=preference_score,
                     variety_score=variety_score,
                     reasons=reasons,
+                    cost_total=cost_total,
+                    cost_per_serving=cost_per_serving,
+                    cost_known_ratio=cost_known_ratio,
                 )
             )
 
@@ -531,12 +570,28 @@ def format_meal_explanation(
 def explain_suggested_meal(meal: "SuggestedMeal") -> str:
     """Wrapper that unpacks a SuggestedMeal into format_meal_explanation."""
     recipe_name = meal.recipe.get("name", "Unknown recipe") if meal.recipe else "Unknown recipe"
-    return format_meal_explanation(
+    lines = [format_meal_explanation(
         recipe_name=recipe_name,
         preference_score=meal.preference_score,
         deal_score=meal.deal_score,
         price_score=meal.price_score,
         variety_score=meal.variety_score,
         reasons=meal.reasons,
-    )
+    )]
+
+    # Per-serving cost estimate
+    if meal.cost_per_serving is not None:
+        pct = int(meal.cost_known_ratio * 100)
+        servings = meal.recipe.get("servings") or "?"
+        lines.append(
+            f"\nEst. cost: ≈ ${meal.cost_per_serving:.2f}/serving"
+            f" (${meal.cost_total:.2f} total, {servings} servings)"
+            f" — {pct}% of ingredients priced from your receipt history."
+        )
+        if meal.cost_known_ratio < 1.0:
+            lines.append("(Partial estimate — some ingredients have no price history.)")
+    else:
+        lines.append("\nEst. cost: unknown — no receipt history for these ingredients.")
+
+    return "\n".join(lines)
 

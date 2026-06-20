@@ -546,6 +546,15 @@ class GrocerySenseApp(tk.Tk):
                 return
             if error is not None:
                 status_var.set(f"Error: {error}")
+                messagebox.showerror("Meal Suggestions Failed", str(error), parent=win)
+                return
+            if not results:
+                status_var.set("No suggestions — recipe catalog is empty or missing.")
+                messagebox.showerror(
+                    "Recipe Catalog Missing",
+                    "No recipes found. Add recipes.json to Grocery_Sense/recipes/ to enable meal suggestions.",
+                    parent=win,
+                )
                 return
             suggestions.extend(results)
             for s in suggestions:
@@ -600,6 +609,16 @@ class GrocerySenseApp(tk.Tk):
                 if error is not None:
                     summary_box.insert(tk.END, f"Error: {error}\n")
                     self._log(f"Weekly plan error: {error}")
+                    messagebox.showerror("Weekly Plan Failed", str(error), parent=win)
+                    return
+
+                if not plan.suggestions:
+                    summary_box.insert(tk.END, "No meals could be planned.\n")
+                    messagebox.showerror(
+                        "Recipe Catalog Missing",
+                        "No recipes found. Add recipes.json to Grocery_Sense/recipes/ to enable weekly planning.",
+                        parent=win,
+                    )
                     return
 
                 for line in summarize_weekly_plan(plan):
