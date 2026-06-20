@@ -53,7 +53,7 @@ class PriceDropAlertsWindow(tk.Toplevel):
         body.rowconfigure(0, weight=1)
         body.columnconfigure(0, weight=1)
 
-        cols = ("type", "item", "store", "flyer", "usual", "drop", "low6", "near6", "staple")
+        cols = ("type", "item", "store", "flyer", "usual", "drop", "low6", "near6", "staple", "buy")
         self.tree = ttk.Treeview(body, columns=cols, show="headings", height=16)
         self.tree.grid(row=0, column=0, sticky="nsew")
 
@@ -70,16 +70,18 @@ class PriceDropAlertsWindow(tk.Toplevel):
         self.tree.heading("low6", text="6-mo low")
         self.tree.heading("near6", text="Δ vs low")
         self.tree.heading("staple", text="Staple (90d)")
+        self.tree.heading("buy", text="Buy")
 
         self.tree.column("type", width=110, anchor="w")
-        self.tree.column("item", width=320, anchor="w")
-        self.tree.column("store", width=160, anchor="w")
-        self.tree.column("flyer", width=110, anchor="e")
-        self.tree.column("usual", width=110, anchor="e")
-        self.tree.column("drop", width=110, anchor="e")
-        self.tree.column("low6", width=110, anchor="e")
-        self.tree.column("near6", width=90, anchor="e")
-        self.tree.column("staple", width=110, anchor="center")
+        self.tree.column("item", width=280, anchor="w")
+        self.tree.column("store", width=140, anchor="w")
+        self.tree.column("flyer", width=100, anchor="e")
+        self.tree.column("usual", width=100, anchor="e")
+        self.tree.column("drop", width=100, anchor="e")
+        self.tree.column("low6", width=100, anchor="e")
+        self.tree.column("near6", width=80, anchor="e")
+        self.tree.column("staple", width=90, anchor="center")
+        self.tree.column("buy", width=80, anchor="center")
 
         self.tree.bind("<<TreeviewSelect>>", lambda _e: self._on_select())
 
@@ -134,6 +136,8 @@ class PriceDropAlertsWindow(tk.Toplevel):
 
             staple = f"{a.staple_purchases_90d}" + (" ✓" if a.is_staple else "")
 
+            buy = f"{a.suggested_qty:.4g}" if a.suggested_qty is not None else "—"
+
             alert_txt = {
                 "DROP_BELOW_USUAL": "Drop",
                 "STOCK_UP": "Stock-up",
@@ -144,7 +148,7 @@ class PriceDropAlertsWindow(tk.Toplevel):
                 "",
                 "end",
                 iid=str(idx),
-                values=(alert_txt, item_label, a.store_name, flyer, usual, drop, low6_s, near6, staple),
+                values=(alert_txt, item_label, a.store_name, flyer, usual, drop, low6_s, near6, staple, buy),
             )
 
         self._details_var.set("Select an alert to see details.")
@@ -186,7 +190,10 @@ class PriceDropAlertsWindow(tk.Toplevel):
             bits.append("6-mo low: unknown")
 
         if a.alert_type in ("STOCK_UP", "BOTH"):
-            bits.append("Stock-up suggestion: near 6-month low and this is a staple.")
+            if a.suggested_qty_note:
+                bits.append(a.suggested_qty_note)
+            else:
+                bits.append("Stock-up suggestion: near 6-month low and this is a staple.")
         if a.alert_type in ("DROP_BELOW_USUAL", "BOTH") and a.pct_below_usual is not None:
             bits.append(f"Dropped {self._fmt_pct(a.pct_below_usual)} below your usual price.")
 

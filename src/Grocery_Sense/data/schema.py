@@ -29,6 +29,8 @@ def create_tables(conn: sqlite3.Connection) -> None:
             flipp_store_id  TEXT,
             is_favorite     INTEGER NOT NULL DEFAULT 0,
             priority        INTEGER NOT NULL DEFAULT 0,
+            shop_here       INTEGER NOT NULL DEFAULT 1,
+            is_active       INTEGER NOT NULL DEFAULT 1,
             notes           TEXT,
             created_at      TEXT NOT NULL DEFAULT (datetime('now'))
         );
@@ -461,6 +463,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
     for col, sql in migrations:
         if col not in existing:
             cur.execute(sql)
+
+    # stores — additive columns, defaults preserve existing behaviour
+    stores_cols = {row[1] for row in cur.execute("PRAGMA table_info(stores)").fetchall()}
+    if "shop_here" not in stores_cols:
+        cur.execute("ALTER TABLE stores ADD COLUMN shop_here INTEGER NOT NULL DEFAULT 1")
+    if "is_active" not in stores_cols:
+        cur.execute("ALTER TABLE stores ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
 
     cur.execute("DROP INDEX IF EXISTS idx_shopping_list_active")
     cur.execute(

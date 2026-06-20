@@ -115,6 +115,8 @@ class UserConfig:
     store_priority: Dict[str, int] = field(default_factory=dict)
     favorite_store_ids: List[int] = field(default_factory=list)
 
+    monthly_budget: Optional[float] = None
+
     household: Household = field(default_factory=Household)
 
 
@@ -397,6 +399,14 @@ def _household_from_raw(raw: Dict[str, Any]) -> Household:
 
 
 def _from_raw_config(raw: Dict[str, Any]) -> UserConfig:
+    raw_budget = raw.get("monthly_budget")
+    try:
+        monthly_budget: Optional[float] = float(raw_budget) if raw_budget is not None else None
+        if monthly_budget is not None and monthly_budget <= 0:
+            monthly_budget = None
+    except (TypeError, ValueError):
+        monthly_budget = None
+
     cfg = UserConfig(
         profile_version=int(raw.get("profile_version", raw.get("version", PROFILE_VERSION)) or PROFILE_VERSION),
         postal_code=str(raw.get("postal_code", "") or ""),
@@ -404,6 +414,7 @@ def _from_raw_config(raw: Dict[str, Any]) -> UserConfig:
         country=str(raw.get("country", "") or "CA"),
         store_priority=raw.get("store_priority", {}) or {},
         favorite_store_ids=raw.get("favorite_store_ids", []) or [],
+        monthly_budget=monthly_budget,
         household=_household_from_raw(raw.get("household", {}) or {}),
     )
 

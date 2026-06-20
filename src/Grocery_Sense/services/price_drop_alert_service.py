@@ -25,6 +25,7 @@ from Grocery_Sense.data.repositories.prices_repo import (
     get_active_flyer_prices_batch,
     get_most_recent_prices_by_store_batch,
     get_most_recent_prices_global_batch,
+    get_purchase_cadence_batch,
     get_usual_unit_price_batch,
     get_six_month_low_batch,
     get_last_seen_at_or_below_batch,
@@ -58,6 +59,8 @@ class PriceDropAlert:
     warnings: List[str]
     soft_excluded_by: List[str]
     soft_exclude_hit: Optional[str]
+    suggested_qty: Optional[float] = None
+    suggested_qty_note: Optional[str] = None
 
     @staticmethod
     def _from_dict(d: Dict[str, Any]) -> "PriceDropAlert":
@@ -99,6 +102,8 @@ class PriceDropAlert:
             warnings=warnings,
             soft_excluded_by=[],
             soft_exclude_hit=None,
+            suggested_qty=float(d["suggested_qty"]) if d.get("suggested_qty") is not None else None,
+            suggested_qty_note=d.get("suggested_qty_note"),
         )
 
 
@@ -125,6 +130,12 @@ class PriceDropAlertService:
     STAPLE_LOOKBACK_DAYS = 90
 
     MIN_RECEIPT_SAMPLES_FOR_USUAL = 4
+
+    # Stock-up quantity guidance
+    # ponytail: no shelf-life model — cap at 3× normal so we never tell someone
+    # to buy 6 weeks of milk. Add per-item perishability if produce/dairy over-suggests.
+    STOCK_UP_HORIZON_DAYS = 42   # ~6 weeks of forward coverage
+    MAX_STOCKUP_MULTIPLE = 3     # never suggest more than 3× typical qty
 
     # Minimum six-month-low price (dollars) treated as a valid divisor. Doubles as
     # the ZeroDivisionError guard for pct_above_low math AND a deliberate
@@ -238,6 +249,12 @@ class PriceDropAlertService:
             near_low_ceilings, since_days=self.LOW_LOOKBACK_DAYS
         )
 
+        # Cadence: needed only for stock-up items to compute suggested_qty
+        stock_up_candidate_ids = list(near_low_ceilings.keys())
+        cadence_map = get_purchase_cadence_batch(
+            stock_up_candidate_ids, since_days=self.USUAL_LOOKBACK_DAYS
+        ) if stock_up_candidate_ids else {}
+
         # Second pass: build alerts using fully pre-loaded data
         out: List[Dict[str, Any]] = []
 
@@ -283,6 +300,19 @@ class PriceDropAlertService:
             line_count, receipt_count = staple_item_ids.get(item_id, (0, 0))
             is_staple = 1 if (receipt_count >= 3 or line_count >= 4) else 0
 
+            # Suggested buy quantity for stock-up alerts
+            suggested_qty: Optional[float] = None
+            suggested_qty_note: Optional[str] = None
+            if alert_kind in ("stock_up", "both"):
+                suggested_qty = self._compute_suggested_qty(cadence_map, item_id=item_id)
+                if suggested_qty is not None:
+                    avg_interval, _ = cadence_map.get(item_id, (None, None))
+                    interval_weeks = round((avg_interval or 0) / 7)
+                    suggested_qty_note = (
+                        f"You buy this every ~{interval_weeks} week(s); "
+                        f"at this low, buy {suggested_qty:.4g}."
+                    )
+
             notes = self._build_notes(
                 item_name=str(item.canonical_name),
                 store_name=best_store_name,
@@ -316,6 +346,8 @@ class PriceDropAlertService:
                     "source": best_source,
                     "last_seen_at_or_below": last_seen_at_or_below,
                     "notes": notes,
+                    "suggested_qty": float(suggested_qty) if suggested_qty is not None else None,
+                    "suggested_qty_note": suggested_qty_note,
                 }
             )
 
@@ -640,6 +672,25 @@ class PriceDropAlertService:
             except Exception:
                 pass
         return out
+
+    def _compute_suggested_qty(
+        self,
+        cadence_map: Dict[int, Tuple[Optional[float], Optional[float]]],
+        *,
+        item_id: int,
+    ) -> Optional[float]:
+        """Compute how many units to buy given purchase cadence and stock-up horizon.
+        Returns None if cadence is unknown.
+        """
+        avg_interval, typical_qty = cadence_map.get(item_id, (None, None))
+        if not avg_interval or avg_interval <= 0 or not typical_qty or typical_qty <= 0:
+            return None
+        raw_qty = (self.STOCK_UP_HORIZON_DAYS / avg_interval) * typical_qty
+        qty = min(
+            round(raw_qty / typical_qty) * typical_qty,
+            typical_qty * self.MAX_STOCKUP_MULTIPLE,
+        )
+        return max(qty, typical_qty)
 
     def _passes_stockup_cooldown(self, last_seen_iso: Optional[str]) -> bool:
         # If we can't tell, allow (it will still be near-low)

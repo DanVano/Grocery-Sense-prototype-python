@@ -957,3 +957,60 @@ def get_recent_avg_unit_price_global_batch(
                 if r[1] is not None:
                     out[int(r[0])] = float(r[1])
     return out
+
+
+def get_purchase_cadence_batch(
+    item_ids: List[int],
+    *,
+    since_days: int = 180,
+) -> Dict[int, Tuple[Optional[float], Optional[float]]]:
+    """Return avg purchase interval and typical quantity for staple items.
+
+    Returns {item_id: (avg_interval_days, typical_qty)}.
+    avg_interval_days is None if fewer than 2 distinct receipts.
+    typical_qty is None if no quantity data.
+    Uses only receipt-sourced rows (source='receipt' or receipt_id IS NOT NULL).
+    """
+    items = _coerce_id_list(item_ids)
+    if not items:
+        return {}
+
+    out: Dict[int, Tuple[Optional[float], Optional[float]]] = {}
+    with closing(get_connection()) as conn:
+        for chunk in _chunks(items):
+            item_ph = ",".join("?" * len(chunk))
+            sql = f"""
+            SELECT
+                item_id,
+                COUNT(DISTINCT receipt_id) AS receipt_count,
+                MIN(date(COALESCE(date, created_at))) AS first_date,
+                MAX(date(COALESCE(date, created_at))) AS last_date,
+                AVG(CASE WHEN quantity IS NOT NULL AND quantity > 0 THEN quantity END) AS avg_qty
+            FROM prices
+            WHERE item_id IN ({item_ph})
+              AND (source = 'receipt' OR receipt_id IS NOT NULL)
+              AND date(COALESCE(date, created_at)) >= date('now', ?)
+            GROUP BY item_id
+            """
+            rows = conn.execute(sql, (*chunk, _since_clause(since_days))).fetchall()
+            for r in rows:
+                item_id = int(r[0])
+                receipt_count = int(r[1]) if r[1] is not None else 0
+                first_date = r[2]
+                last_date = r[3]
+                avg_qty = float(r[4]) if r[4] is not None else None
+
+                avg_interval: Optional[float] = None
+                if receipt_count >= 2 and first_date and last_date and first_date != last_date:
+                    from datetime import date as _date
+                    try:
+                        d0 = _date.fromisoformat(first_date)
+                        d1 = _date.fromisoformat(last_date)
+                        span = (d1 - d0).days
+                        if span > 0:
+                            avg_interval = span / (receipt_count - 1)
+                    except ValueError:
+                        pass
+
+                out[item_id] = (avg_interval, avg_qty)
+    return out

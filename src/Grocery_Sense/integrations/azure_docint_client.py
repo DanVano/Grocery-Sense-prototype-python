@@ -440,7 +440,7 @@ def _get_or_create_store_id(
     known_stores: Optional[List[Any]] = None,
 ) -> int:
     merchant_name = (merchant_name or "").strip() or "Unknown Store"
-    stores = known_stores if known_stores is not None else list_stores(only_favorites=False, order_by_priority=True)
+    stores = known_stores if known_stores is not None else list_stores(only_favorites=False, order_by_priority=True, include_archived=True)
     if not stores:
         return int(create_store(name=merchant_name).id)
 

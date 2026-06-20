@@ -180,9 +180,18 @@ class BasketOptimizerService:
             mode = "two_store"
 
         basket_items = shopping_list_repo.list_active_items()
-        stores = stores_repo.list_stores()
+        all_stores = stores_repo.list_stores()
+        stores = [s for s in all_stores if s.shop_here]
 
         result = BasketOptimizationResult(mode=mode)
+
+        if not stores:
+            stores = all_stores
+            if stores:
+                result.warnings.append(
+                    "No stores marked 'Shop here' — using all stores. "
+                    "Use Store Settings to select where you shop."
+                )
 
         if not basket_items:
             result.warnings.append("Your active shopping list is empty.")

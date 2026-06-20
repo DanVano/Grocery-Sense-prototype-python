@@ -31,7 +31,7 @@ import pytest
 
 from Grocery_Sense.data.connection import get_connection
 from Grocery_Sense.data.repositories.items_repo import create_item
-from Grocery_Sense.data.repositories.stores_repo import create_store, list_stores
+from Grocery_Sense.data.repositories.stores_repo import create_store, list_stores, set_store_active
 from Grocery_Sense.integrations import azure_docint_client as az_mod
 from Grocery_Sense.integrations.azure_docint_client import (
     IngestOutcome,
@@ -101,8 +101,22 @@ class TestGetOrCreateStoreId:
 
     def test_blank_input_becomes_unknown_store(self, isolated_db):
         sid = _get_or_create_store_id("")
-        store = next(s for s in list_stores() if s.id == sid)
+        store = next(s for s in list_stores(include_archived=True) if s.id == sid)
         assert store.name == "Unknown Store"
+
+    def test_archived_store_matches_without_creating_duplicate(self, isolated_db):
+        """
+        After a store is archived, re-scanning a receipt from that merchant must
+        still link to the archived store — not create a new active duplicate.
+        """
+        existing = create_store(name="Real Canadian Superstore")
+        set_store_active(existing.id, False)
+
+        sid = _get_or_create_store_id("Real Canadian Superstore #1234", threshold=80)
+
+        all_stores = list_stores(include_archived=True)
+        assert len(all_stores) == 1, "no duplicate should be created"
+        assert sid == existing.id
 
 
 # ---------------------------------------------------------------------------

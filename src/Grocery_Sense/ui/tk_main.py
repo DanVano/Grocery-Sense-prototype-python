@@ -49,6 +49,10 @@ from Grocery_Sense.ui.price_history_window import open_price_history_window
 from Grocery_Sense.ui.receipt_import_window import open_receipt_import_window
 from Grocery_Sense.ui.receipt_browser_window import open_receipt_browser_window
 from Grocery_Sense.ui.store_plan_window import open_store_plan_window
+from Grocery_Sense.ui.budget_window import open_budget_window
+from Grocery_Sense.ui.store_settings_window import open_store_settings_window
+from Grocery_Sense.ui.price_drop_alerts_window import open_price_drop_alerts_window
+from Grocery_Sense.ui.stores_management_window import open_stores_management_window
 
 
 
@@ -255,6 +259,30 @@ class GrocerySenseApp(tk.Tk):
         ).grid(row=row, column=0, sticky="w", pady=2)
         row += 1
 
+        ttk.Button(
+            frame,
+            text="17) Budget Tracker",
+            command=self._safe_call(lambda: open_budget_window(self, log=self._log)),
+            width=35,
+        ).grid(row=row, column=0, sticky="w", pady=2)
+        row += 1
+
+        ttk.Button(
+            frame,
+            text="18) Store Settings",
+            command=self._safe_call(lambda: open_store_settings_window(self, log=self._log)),
+            width=35,
+        ).grid(row=row, column=0, sticky="w", pady=2)
+        row += 1
+
+        ttk.Button(
+            frame,
+            text="19) Price Drop Alerts",
+            command=self._safe_call(lambda: open_price_drop_alerts_window(self, log=self._log)),
+            width=35,
+        ).grid(row=row, column=0, sticky="w", pady=2)
+        row += 1
+
     def _build_log_panel(self) -> None:
         self.log_box = ScrolledText(self, state=tk.NORMAL, height=12)
         self.log_box.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=False, padx=10, pady=10)
@@ -298,18 +326,7 @@ class GrocerySenseApp(tk.Tk):
         threading.Thread(target=worker, daemon=True).start()
 
     def _open_stores_management_window(self) -> None:
-        """
-        You referenced this in the main menu.
-        If you already have a stores management window module, import and call it here.
-
-        For now: safe placeholder so the UI runs cleanly.
-        """
-        messagebox.showinfo(
-            "Stores Management",
-            "Stores Management screen is not wired in this tk_main.py yet.\n\n"
-            "If you have it already, tell me the module path (e.g. Grocery_Sense.ui.stores_management_window)\n"
-            "and I’ll hook it up.",
-        )
+        open_stores_management_window(self, log=self._log)
 
     def _seed_demo_data(self) -> None:
         self._log("Seeding demo data…")

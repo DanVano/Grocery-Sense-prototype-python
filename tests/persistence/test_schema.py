@@ -157,6 +157,65 @@ class TestColumnDefaults:
             ).fetchone()
         assert row[0]  # not NULL/empty
 
+    def test_stores_is_active_column_present_after_migrate(self, isolated_db):
+        with get_connection() as conn:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(stores)").fetchall()}
+        assert "is_active" in cols
+
+
+# ---------------------------------------------------------------------------
+# is_active migration preserves existing rows
+# ---------------------------------------------------------------------------
+
+
+class TestIsActiveMigration:
+    def test_existing_row_defaults_active_after_adding_column(self, tmp_path):
+        """Simulate an old DB without is_active; _migrate must add it as 1."""
+        import sqlite3
+
+        db_path = tmp_path / "old.db"
+        conn = sqlite3.connect(str(db_path))
+        # Minimal old-shape stores (no is_active)
+        conn.execute(
+            """
+            CREATE TABLE stores (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        # shopping_list with all columns the _migrate index references
+        conn.execute(
+            """
+            CREATE TABLE shopping_list (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                display_name TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                is_checked_off INTEGER NOT NULL DEFAULT 0,
+                planned_store_id INTEGER
+            )
+            """
+        )
+        conn.execute("INSERT INTO stores (name) VALUES ('Legacy Store')")
+        conn.commit()
+        conn.close()
+
+        # Run _migrate against the old DB (no is_active column yet).
+        conn2 = sqlite3.connect(str(db_path))
+        conn2.row_factory = sqlite3.Row
+        _migrate(conn2)
+        conn2.close()
+
+        conn3 = sqlite3.connect(str(db_path))
+        conn3.row_factory = sqlite3.Row
+        cols = {r[1] for r in conn3.execute("PRAGMA table_info(stores)").fetchall()}
+        assert "is_active" in cols
+
+        row = conn3.execute("SELECT is_active FROM stores WHERE name = 'Legacy Store'").fetchone()
+        assert row["is_active"] == 1, "existing rows must default to active=1"
+        conn3.close()
+
     def test_items_is_tracked_defaults_to_1(self, isolated_db):
         """
         schema.py declares items.is_tracked DEFAULT 1, but items_admin_repo

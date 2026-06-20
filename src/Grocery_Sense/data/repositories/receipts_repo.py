@@ -187,6 +187,58 @@ def get_receipt_raw_json(receipt_id: int) -> Tuple[Optional[str], Optional[str]]
 
 
 # -----------------------------------------------------------------------------
+# Spend aggregation
+# -----------------------------------------------------------------------------
+
+def get_month_spend(year_month: str) -> Dict[str, Any]:
+    """
+    Return total spend and receipt count for a given month ('YYYY-MM').
+    """
+    with connection_scope() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                COALESCE(SUM(total_amount), 0.0) AS total,
+                COUNT(*) AS receipt_count
+            FROM receipts
+            WHERE STRFTIME('%Y-%m', purchase_date) = ?
+              AND total_amount IS NOT NULL;
+            """,
+            (year_month,),
+        ).fetchone()
+    total = float(row[0]) if row and row[0] is not None else 0.0
+    count = int(row[1]) if row and row[1] is not None else 0
+    return {"month": year_month, "total": total, "receipt_count": count}
+
+
+def get_spend_trend(months: int = 12) -> List[Dict[str, Any]]:
+    """
+    Return monthly spend totals for the last N months, oldest first.
+    Each entry: {month: 'YYYY-MM', total: float, receipt_count: int}.
+    """
+    months = max(1, int(months))
+    with connection_scope() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                STRFTIME('%Y-%m', purchase_date) AS month,
+                COALESCE(SUM(total_amount), 0.0) AS total,
+                COUNT(*) AS receipt_count
+            FROM receipts
+            WHERE total_amount IS NOT NULL
+              AND purchase_date >= DATE('now', ? || ' months')
+            GROUP BY month
+            ORDER BY month ASC;
+            """,
+            (f"-{months}",),
+        ).fetchall()
+    return [
+        {"month": r[0], "total": float(r[1]), "receipt_count": int(r[2])}
+        for r in rows
+    ]
+
+
+# -----------------------------------------------------------------------------
 # Safe cascade delete + Undo backup/restore
 # -----------------------------------------------------------------------------
 

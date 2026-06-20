@@ -21,6 +21,8 @@ class Store:
     flipp_store_id: Optional[str] = None
     is_favorite: bool = False
     priority: int = 0
+    shop_here: bool = True
+    is_active: bool = True
     notes: Optional[str] = None
 
 

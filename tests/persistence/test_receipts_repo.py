@@ -24,8 +24,10 @@ from Grocery_Sense.data.repositories.receipts_repo import (
     delete_receipt_cascade,
     delete_receipt_with_backup,
     ensure_receipt_support_tables,
+    get_month_spend,
     get_receipt,
     get_receipt_raw_json,
+    get_spend_trend,
     list_deleted_backups,
     list_receipt_line_items,
     list_recent_receipts,
@@ -334,3 +336,48 @@ class TestListDeletedBackups:
 
         backups = list_deleted_backups(limit=1)
         assert len(backups) == 1
+
+
+# ---------------------------------------------------------------------------
+# Spend aggregation
+# ---------------------------------------------------------------------------
+
+
+class TestGetMonthSpend:
+    def test_sums_receipts_for_month(self, isolated_db):
+        store = create_store(name="S")
+        _insert_receipt(store.id, purchase_date="2026-05-10", total_amount=50.00)
+        _insert_receipt(store.id, purchase_date="2026-05-22", total_amount=30.00)
+        _insert_receipt(store.id, purchase_date="2026-04-15", total_amount=99.00)
+
+        result = get_month_spend("2026-05")
+        assert result["month"] == "2026-05"
+        assert abs(result["total"] - 80.00) < 0.01
+        assert result["receipt_count"] == 2
+
+    def test_empty_month_returns_zero(self, isolated_db):
+        result = get_month_spend("2099-01")
+        assert result["total"] == 0.0
+        assert result["receipt_count"] == 0
+
+
+class TestGetSpendTrend:
+    def test_groups_by_month_ascending(self, isolated_db):
+        store = create_store(name="S")
+        _insert_receipt(store.id, purchase_date="2026-01-10", total_amount=10.00)
+        _insert_receipt(store.id, purchase_date="2026-01-20", total_amount=20.00)
+        _insert_receipt(store.id, purchase_date="2026-02-05", total_amount=50.00)
+
+        rows = get_spend_trend(months=6)
+        months = [r["month"] for r in rows]
+        assert months == sorted(months), "should be ascending"
+        jan = next((r for r in rows if r["month"] == "2026-01"), None)
+        assert jan is not None
+        assert abs(jan["total"] - 30.00) < 0.01
+        assert jan["receipt_count"] == 2
+
+    def test_excludes_old_data(self, isolated_db):
+        store = create_store(name="S")
+        _insert_receipt(store.id, purchase_date="2000-01-01", total_amount=500.00)
+        rows = get_spend_trend(months=12)
+        assert all(r["month"] >= "2025-" for r in rows)
