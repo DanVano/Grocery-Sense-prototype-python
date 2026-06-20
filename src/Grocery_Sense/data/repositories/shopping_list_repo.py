@@ -15,6 +15,7 @@ class ShoppingListRow:
     category: str
     is_checked_off: bool
     notes: str
+    added_by: Optional[str]
     added_by_member_id: Optional[int]
     is_active: bool
     planned_store_id: Optional[int]
@@ -30,6 +31,7 @@ def _row_to_obj(row) -> ShoppingListRow:
         category=str(row["category"] or ""),
         is_checked_off=bool(row["is_checked_off"] or 0),
         notes=str(row["notes"] or ""),
+        added_by=str(row["added_by"]) if row["added_by"] else None,
         added_by_member_id=int(row["added_by_member_id"]) if row["added_by_member_id"] is not None else None,
         is_active=bool(row["is_active"] or 0),
         planned_store_id=int(row["planned_store_id"]) if row["planned_store_id"] is not None else None,
@@ -48,7 +50,7 @@ def list_active_items(
     """
     cols = (
         "SELECT id, display_name, quantity, unit, category, is_checked_off, notes, "
-        "added_by_member_id, is_active, planned_store_id, item_id FROM shopping_list "
+        "added_by, added_by_member_id, is_active, planned_store_id, item_id FROM shopping_list "
         "WHERE is_active = 1 AND is_deleted = 0"
     )
     with connection_scope() as conn:
@@ -73,17 +75,8 @@ def list_all_items() -> List[ShoppingListRow]:
         rows = conn.execute(
             """
             SELECT
-                id,
-                display_name,
-                quantity,
-                unit,
-                category,
-                is_checked_off,
-                notes,
-                added_by_member_id,
-                is_active,
-                planned_store_id,
-                item_id
+                id, display_name, quantity, unit, category, is_checked_off, notes,
+                added_by, added_by_member_id, is_active, planned_store_id, item_id
             FROM shopping_list
             WHERE is_deleted = 0
             ORDER BY id DESC
@@ -97,7 +90,7 @@ def get_item(row_id: int) -> Optional[ShoppingListRow]:
         row = conn.execute(
             """
             SELECT id, display_name, quantity, unit, category,
-                   is_checked_off, notes, added_by_member_id, is_active,
+                   is_checked_off, notes, added_by, added_by_member_id, is_active,
                    planned_store_id, item_id
             FROM shopping_list WHERE id = ?
             """,

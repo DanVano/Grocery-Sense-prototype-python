@@ -25,6 +25,13 @@ _integrity_checked: set = set()
 _TEST_DB_PATH: Optional[str] = None
 
 
+def current_db_path() -> Path:
+    """Return the resolved path of the active database (honoring _TEST_DB_PATH)."""
+    if _TEST_DB_PATH is not None:
+        return Path(_TEST_DB_PATH)
+    return get_db_path()
+
+
 def get_db_path(base_dir: Optional[Path] = None) -> Path:
     """
     Return the full path to the DB file.

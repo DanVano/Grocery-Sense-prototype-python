@@ -23,10 +23,12 @@ from __future__ import annotations
 import threading
 import traceback
 import tkinter as tk
+from pathlib import Path
 from tkinter import ttk, messagebox
 from tkinter.scrolledtext import ScrolledText
 
 from Grocery_Sense.data.schema import initialize_database
+from Grocery_Sense.config import config_store
 
 from Grocery_Sense.services.shopping_list_service import ShoppingListService
 from Grocery_Sense.services.meal_suggestion_service import MealSuggestionService, explain_suggested_meal
@@ -283,6 +285,45 @@ class GrocerySenseApp(tk.Tk):
         ).grid(row=row, column=0, sticky="w", pady=2)
         row += 1
 
+        ttk.Button(
+            frame,
+            text="20) Backup Database",
+            command=self._safe_call(self._backup_database),
+            width=35,
+        ).grid(row=row, column=0, sticky="w", pady=2)
+        row += 1
+
+        ttk.Button(
+            frame,
+            text="21) Export Data (CSV / JSON)",
+            command=self._safe_call(self._export_data),
+            width=35,
+        ).grid(row=row, column=0, sticky="w", pady=2)
+        row += 1
+
+    def _backup_database(self) -> None:
+        from Grocery_Sense.services.db_maintenance_service import backup_database
+        path = backup_database()
+        self._log(f"Backup saved: {path}")
+        messagebox.showinfo("Backup Complete", f"Database backed up to:\n{path}", parent=self)
+
+    def _export_data(self) -> None:
+        from tkinter import filedialog
+        from Grocery_Sense.services.db_maintenance_service import export_to_csv, export_to_json
+        dest = filedialog.askdirectory(title="Choose export folder", parent=self)
+        if not dest:
+            return
+        dest_path = Path(dest)
+        csv_files = export_to_csv(dest_path / "csv")
+        json_files = export_to_json(dest_path / "json")
+        total = len(csv_files) + len(json_files)
+        self._log(f"Exported {total} files to {dest_path}")
+        messagebox.showinfo(
+            "Export Complete",
+            f"Exported {len(csv_files)} CSV and {len(json_files)} JSON files to:\n{dest_path}",
+            parent=self,
+        )
+
     def _build_log_panel(self) -> None:
         self.log_box = ScrolledText(self, state=tk.NORMAL, height=12)
         self.log_box.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=False, padx=10, pady=10)
@@ -359,6 +400,35 @@ class GrocerySenseApp(tk.Tk):
             row=0, column=0, sticky="w"
         )
 
+        # --- Member selector
+        members = config_store.list_members()
+        member_id_by_name = {m.name: m.id for m in members}
+        try:
+            active_name = config_store.get_active_member().name
+        except Exception:
+            active_name = members[0].name if members else ""
+
+        member_frame = ttk.Frame(root)
+        member_frame.grid(row=0, column=0, sticky="e")
+        ttk.Label(member_frame, text="Who's shopping:").pack(side=tk.LEFT, padx=(0, 6))
+        member_var = tk.StringVar(value=active_name)
+        member_cb = ttk.Combobox(
+            member_frame,
+            textvariable=member_var,
+            values=[m.name for m in members],
+            width=14,
+            state="readonly",
+        )
+        member_cb.pack(side=tk.LEFT)
+
+        def on_member_change(_evt=None) -> None:
+            name = member_var.get()
+            mid = member_id_by_name.get(name)
+            if mid is not None:
+                config_store.set_active_member_id(mid)
+
+        member_cb.bind("<<ComboboxSelected>>", on_member_change)
+
         # --- Add item panel
         add_frame = ttk.LabelFrame(root, text="Add Item")
         add_frame.grid(row=1, column=0, sticky="ew", pady=(10, 10))
@@ -405,12 +475,16 @@ class GrocerySenseApp(tk.Tk):
                 listbox.insert(tk.END, "(no items)")
                 return
 
+            # build id → name lookup fresh on each refresh (members can change)
+            id_to_name = {m.id: m.name for m in config_store.list_members()}
+
             for it in current_items:
                 status = "✓" if it.is_checked_off else " "
                 qty = "" if it.quantity is None else str(it.quantity)
                 unit = "" if it.unit is None else str(it.unit)
-                mapped = "" if it.item_id is None else f" item_id={it.item_id}"
-                line = f"[{status}] id={it.id}  {it.display_name}  {qty} {unit}{mapped}"
+                by = id_to_name.get(it.added_by_member_id, it.added_by or "")
+                by_label = f" — {by}" if by else ""
+                line = f"[{status}] {it.display_name}  {qty} {unit}{by_label}"
                 listbox.insert(tk.END, line)
 
         def get_selected_item():
@@ -443,17 +517,21 @@ class GrocerySenseApp(tk.Tk):
                     self._log("Add Item: qty must be a number (or blank).")
                     return
 
+            selected_member_name = member_var.get()
+            selected_member_id = member_id_by_name.get(selected_member_name)
+
             self.shopping_list_service.add_single_item(
                 name=name,
                 quantity=quantity,
                 unit=unit,
                 planned_store_id=None,
                 notes=None,
-                added_by="tk_ui",
+                added_by=selected_member_name or "tk_ui",
+                added_by_member_id=selected_member_id,
                 item_id=None,
-                auto_map=True,  # mapping
+                auto_map=True,
             )
-            self._log(f"Added: {name} ({quantity or ''} {unit})")
+            self._log(f"Added: {name} ({quantity or ''} {unit}) — {selected_member_name or 'unknown'}")
             name_var.set("")
             qty_var.set("")
             name_entry.focus_set()
