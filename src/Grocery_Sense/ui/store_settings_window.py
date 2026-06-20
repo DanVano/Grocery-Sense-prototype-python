@@ -4,6 +4,8 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from typing import Callable, Optional
 
+import tkinter as tk
+
 from Grocery_Sense.data.repositories import stores_repo
 
 
@@ -30,16 +32,18 @@ class StoreSettingsWindow(tk.Toplevel):
             foreground="#444",
         ).pack(anchor="w", pady=(0, 8))
 
-        cols = ("name", "shop_here", "favourite", "priority")
+        cols = ("name", "shop_here", "favourite", "priority", "distance_km")
         self.tree = ttk.Treeview(root, columns=cols, show="headings", height=14, selectmode="browse")
         self.tree.heading("name", text="Store")
         self.tree.heading("shop_here", text="Shop here")
         self.tree.heading("favourite", text="Favourite ★")
         self.tree.heading("priority", text="Priority")
-        self.tree.column("name", width=300, anchor="w")
-        self.tree.column("shop_here", width=90, anchor="center")
-        self.tree.column("favourite", width=100, anchor="center")
-        self.tree.column("priority", width=80, anchor="center")
+        self.tree.heading("distance_km", text="Distance (km)")
+        self.tree.column("name", width=240, anchor="w")
+        self.tree.column("shop_here", width=80, anchor="center")
+        self.tree.column("favourite", width=90, anchor="center")
+        self.tree.column("priority", width=70, anchor="center")
+        self.tree.column("distance_km", width=110, anchor="center")
 
         vsb = ttk.Scrollbar(root, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
@@ -56,22 +60,31 @@ class StoreSettingsWindow(tk.Toplevel):
         ttk.Button(btn_row, text="Refresh", command=self._refresh).pack(side="left")
         ttk.Button(btn_row, text="Close", command=self.destroy).pack(side="right")
 
+        dist_row = ttk.Frame(root)
+        dist_row.pack(fill="x", pady=(6, 0))
+        ttk.Label(dist_row, text="Set distance (km) for selected store:").pack(side="left")
+        self._dist_var = tk.StringVar()
+        ttk.Entry(dist_row, textvariable=self._dist_var, width=8).pack(side="left", padx=(6, 6))
+        ttk.Button(dist_row, text="Save", command=self._save_distance).pack(side="left")
+
         note = ttk.Label(
             root,
-            text="Only 'Shop here' stores are considered by the Basket Optimizer.",
+            text="Only 'Shop here' stores are used by the Basket Optimizer. Distance enables trip-cost estimates.",
             foreground="#666",
         )
-        note.pack(anchor="w", pady=(6, 0))
+        note.pack(anchor="w", pady=(4, 0))
 
     def _refresh(self) -> None:
         self._stores = stores_repo.list_stores(order_by_priority=False)
         self.tree.delete(*self.tree.get_children())
         for s in self._stores:
+            dist = f"{s.distance_km:.1f}" if s.distance_km is not None else "—"
             self.tree.insert("", "end", iid=str(s.id), values=(
                 s.name,
                 "✓" if s.shop_here else "✗",
                 "★" if s.is_favorite else "—",
                 s.priority if s.priority else "—",
+                dist,
             ))
 
     def _selected_store(self):
@@ -104,6 +117,29 @@ class StoreSettingsWindow(tk.Toplevel):
             messagebox.showerror("Error", str(exc), parent=self)
             return
         self._log(f"[StoreSettings] {'Starred' if not store.is_favorite else 'Unstarred'} {store.name}")
+        self._refresh()
+
+    def _save_distance(self) -> None:
+        store = self._selected_store()
+        if store is None:
+            return
+        raw = self._dist_var.get().strip()
+        if not raw:
+            # Clear distance
+            stores_repo.set_store_distance_km(store.id, None)
+            self._log(f"[StoreSettings] Cleared distance for {store.name}")
+            self._refresh()
+            return
+        try:
+            km = float(raw)
+            if km < 0:
+                raise ValueError("negative")
+        except ValueError:
+            messagebox.showerror("Invalid", "Enter a positive number of km.", parent=self)
+            return
+        stores_repo.set_store_distance_km(store.id, km)
+        self._log(f"[StoreSettings] Set distance for {store.name}: {km} km")
+        self._dist_var.set("")
         self._refresh()
 
 

@@ -9,6 +9,22 @@ from pathlib import Path
 import sqlite3
 
 
+_SCHEMA_VERSION = 1  # bump when adding a new numbered migration below
+
+
+def _get_schema_version(cur: sqlite3.Cursor) -> int:
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)"
+    )
+    row = cur.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
+    return int(row[0]) if row else 0
+
+
+def _set_schema_version(cur: sqlite3.Cursor, version: int) -> None:
+    cur.execute("DELETE FROM schema_version")
+    cur.execute("INSERT INTO schema_version (version) VALUES (?)", (version,))
+
+
 def create_tables(conn: sqlite3.Connection) -> None:
     """
     Create all tables if they do not exist.
@@ -341,6 +357,11 @@ def create_tables(conn: sqlite3.Connection) -> None:
         """
     )
 
+    # schema_version table (ledger for numbered migrations)
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)"
+    )
+
     conn.commit()
 
 
@@ -453,29 +474,46 @@ def _migrate_receipt_support_tables(conn: sqlite3.Connection) -> None:
 def _migrate(conn: sqlite3.Connection) -> None:
     """Apply incremental migrations for columns added after the initial schema."""
     cur = conn.cursor()
-    existing = {row[1] for row in cur.execute("PRAGMA table_info(shopping_list)").fetchall()}
 
-    migrations = [
-        ("category",           "ALTER TABLE shopping_list ADD COLUMN category TEXT"),
-        ("added_by_member_id", "ALTER TABLE shopping_list ADD COLUMN added_by_member_id INTEGER"),
-        ("is_deleted",         "ALTER TABLE shopping_list ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0"),
-    ]
-    for col, sql in migrations:
-        if col not in existing:
-            cur.execute(sql)
+    current_version = _get_schema_version(cur)
 
-    # stores — additive columns, defaults preserve existing behaviour
-    stores_cols = {row[1] for row in cur.execute("PRAGMA table_info(stores)").fetchall()}
-    if "shop_here" not in stores_cols:
-        cur.execute("ALTER TABLE stores ADD COLUMN shop_here INTEGER NOT NULL DEFAULT 1")
-    if "is_active" not in stores_cols:
-        cur.execute("ALTER TABLE stores ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
+    # -------------------------------------------------------------------------
+    # Pre-ledger migrations (PRAGMA probes) — applied when version == 0.
+    # These ran before the schema_version table existed; stamp as version 1
+    # once they are done so future migrations can key off the integer.
+    # -------------------------------------------------------------------------
+    if current_version < 1:
+        existing = {row[1] for row in cur.execute("PRAGMA table_info(shopping_list)").fetchall()}
+        for col, sql in [
+            ("category",           "ALTER TABLE shopping_list ADD COLUMN category TEXT"),
+            ("added_by_member_id", "ALTER TABLE shopping_list ADD COLUMN added_by_member_id INTEGER"),
+            ("is_deleted",         "ALTER TABLE shopping_list ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0"),
+        ]:
+            if col not in existing:
+                cur.execute(sql)
 
-    cur.execute("DROP INDEX IF EXISTS idx_shopping_list_active")
-    cur.execute(
-        "CREATE INDEX IF NOT EXISTS idx_shopping_list_active "
-        "ON shopping_list(is_active, is_deleted, is_checked_off, planned_store_id)"
-    )
+        stores_cols = {row[1] for row in cur.execute("PRAGMA table_info(stores)").fetchall()}
+        if "shop_here" not in stores_cols:
+            cur.execute("ALTER TABLE stores ADD COLUMN shop_here INTEGER NOT NULL DEFAULT 1")
+        if "is_active" not in stores_cols:
+            cur.execute("ALTER TABLE stores ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
+        if "distance_km" not in stores_cols:
+            cur.execute("ALTER TABLE stores ADD COLUMN distance_km REAL")
+
+        cur.execute("DROP INDEX IF EXISTS idx_shopping_list_active")
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_shopping_list_active "
+            "ON shopping_list(is_active, is_deleted, is_checked_off, planned_store_id)"
+        )
+        _set_schema_version(cur, 1)
+
+    # -------------------------------------------------------------------------
+    # Add new numbered migrations here (version 2, 3, …):
+    #
+    # if current_version < 2:
+    #     cur.execute("ALTER TABLE foo ADD COLUMN bar TEXT")
+    #     _set_schema_version(cur, 2)
+    # -------------------------------------------------------------------------
 
     conn.commit()
     _migrate_receipt_support_tables(conn)

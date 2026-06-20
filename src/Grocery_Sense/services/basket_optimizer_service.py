@@ -32,6 +32,34 @@ DEFAULT_EXCLUDE_SAFE_PHRASES: List[str] = [
     "olive oil",
 ]
 
+_FLAT_TRIP_PENALTY = 6.0  # fallback when distance_km is unknown
+
+
+def _compute_trip_penalty(store_a, store_b) -> float:
+    """
+    Return the cost penalty for adding a second stop.
+
+    If either store has distance_km set, we charge: 2 * max_distance * gas_cost_per_km
+    (round-trip to the farther store). Falls back to _FLAT_TRIP_PENALTY when
+    distance is unknown — the warning in BasketOptimizationResult discloses this.
+    """
+    try:
+        from Grocery_Sense.services.budget_service import get_gas_cost_per_km
+        gas_rate = get_gas_cost_per_km()
+    except Exception:
+        gas_rate = 0.18
+
+    d_a = getattr(store_a, "distance_km", None)
+    d_b = getattr(store_b, "distance_km", None)
+
+    distances = [d for d in (d_a, d_b) if d is not None and d > 0]
+    if not distances:
+        return _FLAT_TRIP_PENALTY  # ponytail: flat until distances are entered
+
+    # Charge for a round-trip to the farther store (detour cost).
+    return 2.0 * max(distances) * gas_rate
+
+
 def _positive(v: object) -> bool:
     """Return True only for a strictly positive numeric price."""
     return isinstance(v, (int, float)) and v > 0
@@ -365,9 +393,29 @@ class BasketOptimizerService:
                 f"{unknown_total} basket item(s) have unknown prices in the DB. Totals are partial estimates."
             )
         if mode == "two_store" and len(chosen_store_ids) == 2:
-            result.warnings.append(
-                "Two-store mode may save more, but requires an extra trip (time + gas)."
-            )
+            store_objs = {int(s.id): s for s in stores}
+            s_a = store_objs.get(chosen_store_ids[0])
+            s_b = store_objs.get(chosen_store_ids[1])
+            d_a = getattr(s_a, "distance_km", None)
+            d_b = getattr(s_b, "distance_km", None)
+            distances = [d for d in (d_a, d_b) if d is not None and d > 0]
+            if distances:
+                try:
+                    from Grocery_Sense.services.budget_service import get_gas_cost_per_km
+                    gas_rate = get_gas_cost_per_km()
+                except Exception:
+                    gas_rate = 0.18
+                extra_km = 2.0 * max(distances)
+                extra_cost = extra_km * gas_rate
+                result.warnings.append(
+                    f"Two-store mode: extra ~{extra_km:.0f} km driving "
+                    f"(≈ ${extra_cost:.2f} gas at ${gas_rate:.2f}/km)."
+                )
+            else:
+                result.warnings.append(
+                    "Two-store mode may save more, but requires an extra trip (time + gas). "
+                    "Set store distance in Store Settings for a precise cost estimate."
+                )
 
         # Preference warnings: hard-excluded / allergen items were pulled OUT of
         # the optimized plan above; tell the user which and why.
@@ -698,8 +746,10 @@ class BasketOptimizerService:
                 if items_at_a == 0 or items_at_b == 0:
                     continue
 
-                # Two-store travel penalty + weaker favourite tie-breaker
-                score = total + (unknown * 5.0) + 6.0
+                # Two-store travel penalty: 2× round-trips to the extra store.
+                # Uses distance_km if set; falls back to flat $6 and discloses it.
+                trip_penalty = _compute_trip_penalty(store_by_id.get(a), store_by_id.get(b))
+                score = total + (unknown * 5.0) + trip_penalty
                 try:
                     if (
                         bool(getattr(store_by_id.get(a), "is_favorite", False))

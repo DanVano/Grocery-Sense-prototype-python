@@ -20,6 +20,8 @@ Main menu:
 
 from __future__ import annotations
 
+import logging
+import logging.handlers
 import threading
 import traceback
 import tkinter as tk
@@ -56,6 +58,23 @@ from Grocery_Sense.ui.store_settings_window import open_store_settings_window
 from Grocery_Sense.ui.price_drop_alerts_window import open_price_drop_alerts_window
 from Grocery_Sense.ui.stores_management_window import open_stores_management_window
 
+
+
+def _setup_file_logger() -> logging.Logger:
+    from Grocery_Sense.data.connection import get_db_path
+    log_path = get_db_path().parent / "grocery_sense.log"
+    logger = logging.getLogger("grocery_sense")
+    if not logger.handlers:
+        handler = logging.handlers.RotatingFileHandler(
+            log_path, maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8"
+        )
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+    return logger
+
+
+_file_logger = _setup_file_logger()
 
 
 class GrocerySenseApp(tk.Tk):
@@ -330,14 +349,15 @@ class GrocerySenseApp(tk.Tk):
         self._log("Log initialized.")
 
     def _log(self, message: str) -> None:
+        _file_logger.info(message)
         try:
             self.log_box.insert(tk.END, message + "\n")
             self.log_box.see(tk.END)
         except Exception:
-            # If log box isn't built yet
             pass
 
     def _log_exception(self, prefix: str) -> None:
+        _file_logger.exception(prefix)
         self._log(prefix)
         self._log(traceback.format_exc())
 

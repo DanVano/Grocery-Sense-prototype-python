@@ -24,6 +24,7 @@ class Store:
     shop_here: bool = True
     is_active: bool = True
     notes: Optional[str] = None
+    distance_km: Optional[float] = None
 
 
 @dataclass

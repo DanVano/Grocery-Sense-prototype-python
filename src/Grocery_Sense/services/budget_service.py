@@ -76,3 +76,16 @@ def save_monthly_budget(amount: Optional[float]) -> None:
     cfg = config_store.load_config()
     cfg.monthly_budget = amount if (amount is not None and amount > 0) else None
     config_store.save_config(cfg)
+
+
+def save_gas_cost_per_km(rate: float) -> None:
+    """Persist gas cost per km (must be positive)."""
+    if rate <= 0:
+        raise ValueError(f"gas_cost_per_km must be positive, got {rate}")
+    cfg = config_store.load_config()
+    cfg.gas_cost_per_km = float(rate)
+    config_store.save_config(cfg)
+
+
+def get_gas_cost_per_km() -> float:
+    return config_store.load_config().gas_cost_per_km

@@ -116,6 +116,8 @@ class UserConfig:
     favorite_store_ids: List[int] = field(default_factory=list)
 
     monthly_budget: Optional[float] = None
+    # ponytail: manual entry, no geocoding. Two round trips assumed for second store.
+    gas_cost_per_km: float = 0.18  # $/km operating cost default (~CAN average)
 
     household: Household = field(default_factory=Household)
 
@@ -407,6 +409,14 @@ def _from_raw_config(raw: Dict[str, Any]) -> UserConfig:
     except (TypeError, ValueError):
         monthly_budget = None
 
+    raw_gas = raw.get("gas_cost_per_km")
+    try:
+        gas_cost_per_km: float = float(raw_gas) if raw_gas is not None else 0.18
+        if gas_cost_per_km <= 0:
+            gas_cost_per_km = 0.18
+    except (TypeError, ValueError):
+        gas_cost_per_km = 0.18
+
     cfg = UserConfig(
         profile_version=int(raw.get("profile_version", raw.get("version", PROFILE_VERSION)) or PROFILE_VERSION),
         postal_code=str(raw.get("postal_code", "") or ""),
@@ -415,6 +425,7 @@ def _from_raw_config(raw: Dict[str, Any]) -> UserConfig:
         store_priority=raw.get("store_priority", {}) or {},
         favorite_store_ids=raw.get("favorite_store_ids", []) or [],
         monthly_budget=monthly_budget,
+        gas_cost_per_km=gas_cost_per_km,
         household=_household_from_raw(raw.get("household", {}) or {}),
     )
 

@@ -18,7 +18,7 @@ from Grocery_Sense.domain.models import Store
 
 _SELECT_COLS = (
     "id, name, address, city, postal_code, "
-    "flipp_store_id, is_favorite, priority, shop_here, notes, created_at, is_active"
+    "flipp_store_id, is_favorite, priority, shop_here, notes, created_at, is_active, distance_km"
 )
 
 
@@ -36,6 +36,7 @@ def _row_to_store(row) -> Store:
         notes,
         created_at,
         is_active,
+        distance_km,
     ) = row
 
     return Store(
@@ -50,6 +51,7 @@ def _row_to_store(row) -> Store:
         shop_here=bool(shop_here) if shop_here is not None else True,
         is_active=bool(is_active) if is_active is not None else True,
         notes=notes,
+        distance_km=float(distance_km) if distance_km is not None else None,
     )
 
 
@@ -187,6 +189,17 @@ def set_store_shop_here(store_id: int, shop_here: bool) -> None:
         cur.execute(
             "UPDATE stores SET shop_here = ? WHERE id = ?",
             (1 if shop_here else 0, store_id),
+        )
+        conn.commit()
+
+
+def set_store_distance_km(store_id: int, distance_km: Optional[float]) -> None:
+    """Set the one-way driving distance in km for a store. None clears it."""
+    val = float(distance_km) if distance_km is not None else None
+    with connection_scope() as conn, closing(conn.cursor()) as cur:
+        cur.execute(
+            "UPDATE stores SET distance_km = ? WHERE id = ?",
+            (val, store_id),
         )
         conn.commit()
 
