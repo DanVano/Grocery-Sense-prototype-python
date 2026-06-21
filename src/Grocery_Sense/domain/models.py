@@ -56,16 +56,6 @@ class Receipt:
     azure_request_id: Optional[str] = None
 
 
-@dataclass
-class FlyerSource:
-    id: int
-    provider: str                # e.g. 'flipp'
-    external_id: Optional[str]
-    store_id: int
-    valid_from: str              # 'YYYY-MM-DD'
-    valid_to: str                # 'YYYY-MM-DD'
-
-
 # ---------- Price history ----------
 
 @dataclass
@@ -116,33 +106,3 @@ class ShoppingListItem:
     notes: Optional[str] = None
     category: Optional[str] = None
     added_by_member_id: Optional[int] = None
-
-
-# ---------- User profile & sync ----------
-
-@dataclass
-class UserProfile:
-    id: int
-    household_name: Optional[str] = None
-    postal_code: Optional[str] = None
-    currency: str = "CAD"
-    preferred_store_ids: Optional[str] = None  # e.g. "1,2,5" (simple for now)
-    eats_chicken: bool = True
-    eats_beef: bool = True
-    eats_pork: bool = True
-    eats_fish: bool = True
-    is_vegetarian: bool = False
-    is_gluten_free: bool = False
-    has_nut_allergy: bool = False
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
-
-
-@dataclass
-class SyncMeta:
-    id: int
-    device_role: Optional[str] = None       # 'primary' | 'secondary'
-    instance_id: Optional[str] = None       # random UUID per install
-    last_sync_from_primary_at: Optional[str] = None
-    last_sync_to_primary_at: Optional[str] = None
-    created_at: Optional[str] = None

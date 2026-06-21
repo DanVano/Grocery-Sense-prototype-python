@@ -294,20 +294,6 @@ def create_tables(conn: sqlite3.Connection) -> None:
         """
     )
 
-    # --- sync_meta ---
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS sync_meta (
-            id                         INTEGER PRIMARY KEY AUTOINCREMENT,
-            device_role                TEXT,     -- 'primary' | 'secondary'
-            instance_id                TEXT,     -- random UUID per installation
-            last_sync_from_primary_at  TEXT,
-            last_sync_to_primary_at    TEXT,
-            created_at                 TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-        """
-    )
-
     # --- deleted_receipt_backups (Undo) ---
     cur.execute(
         """

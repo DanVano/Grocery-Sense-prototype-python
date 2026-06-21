@@ -6,12 +6,9 @@ Covers:
   - create_tables is idempotent (safe to call twice)
   - _migrate is idempotent; survives a partial column state
   - Column types for the 'is_deleted' migration are honored
-  - sync_meta table exists but has no repo (documented gap)
 """
 
 from __future__ import annotations
-
-import pytest
 
 from Grocery_Sense.data.connection import get_connection
 from Grocery_Sense.data.schema import _migrate, create_tables, initialize_database
@@ -27,7 +24,6 @@ EXPECTED_TABLES = {
     "item_aliases",
     "shopping_list",
     "user_profile",
-    "sync_meta",
 }
 
 EXPECTED_INDEXES = {
@@ -255,33 +251,3 @@ class TestIsActiveMigration:
         assert row[0] == 0
 
 
-# ---------------------------------------------------------------------------
-# sync_meta — exists but has no repo
-# ---------------------------------------------------------------------------
-
-
-class TestSyncMetaGap:
-    """
-    FINDING (documented): sync_meta is created by schema.py but no repo
-    module wraps it, so callers write to it with raw SQL only. Tests lock
-    in the table shape and document the missing access layer.
-    """
-
-    def test_table_exists(self, isolated_db):
-        with get_connection() as conn:
-            cols = {r[1] for r in conn.execute("PRAGMA table_info(sync_meta)").fetchall()}
-        assert {
-            "id",
-            "device_role",
-            "instance_id",
-            "last_sync_from_primary_at",
-            "last_sync_to_primary_at",
-            "created_at",
-        } <= cols
-
-    def test_no_repo_module_exists(self):
-        """Explicit regression lock: if a sync_meta_repo is ever added, this test
-        fails and should be replaced with coverage of that module."""
-        import importlib
-        with pytest.raises(ImportError):
-            importlib.import_module("Grocery_Sense.data.repositories.sync_meta_repo")
