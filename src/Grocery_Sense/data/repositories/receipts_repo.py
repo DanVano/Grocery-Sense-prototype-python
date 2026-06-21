@@ -26,15 +26,38 @@ def ensure_receipt_support_tables() -> None:
 # Queries (recent receipts, receipt details, line items, raw json)
 # -----------------------------------------------------------------------------
 
-def list_recent_receipts(limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+def list_recent_receipts(
+    limit: int = 50,
+    offset: int = 0,
+    store_id: Optional[int] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     """
     Returns recent receipts with store name + line item count.
+
+    Optional filters: store_id, and a purchase_date range (since/until, ISO
+    YYYY-MM-DD strings, inclusive).
     """
     ensure_receipt_support_tables()
 
+    where: List[str] = []
+    params: List[Any] = []
+    if store_id is not None:
+        where.append("r.store_id = ?")
+        params.append(int(store_id))
+    if since:
+        where.append("r.purchase_date >= ?")
+        params.append(str(since))
+    if until:
+        where.append("r.purchase_date <= ?")
+        params.append(str(until))
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    params.extend([int(limit), int(offset)])
+
     with connection_scope() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT
                 r.id,
                 r.purchase_date,
@@ -53,10 +76,11 @@ def list_recent_receipts(limit: int = 50, offset: int = 0) -> List[Dict[str, Any
                 FROM receipt_line_items
                 GROUP BY receipt_id
             ) li ON li.receipt_id = r.id
+            {where_sql}
             ORDER BY r.id DESC
             LIMIT ? OFFSET ?;
             """,
-            (int(limit), int(offset)),
+            tuple(params),
         ).fetchall()
 
     out: List[Dict[str, Any]] = []
