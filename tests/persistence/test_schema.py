@@ -39,6 +39,7 @@ EXPECTED_INDEXES = {
     "idx_prices_item_store_date",
     "idx_prices_flyer_source_id",
     "idx_prices_source_date",
+    "idx_prices_receipt_id",
     "idx_receipt_line_items_receipt_id",
     "idx_item_aliases_item_id",
     "idx_shopping_list_active",
@@ -74,6 +75,17 @@ class TestSchemaCreation:
         with get_connection() as conn:
             indexes = _index_names(conn)
         assert EXPECTED_INDEXES <= indexes, f"missing: {EXPECTED_INDEXES - indexes}"
+
+    def test_receipt_cascade_delete_uses_receipt_id_index(self, isolated_db):
+        """The receipts->prices ON DELETE CASCADE must hit idx_prices_receipt_id,
+        not scan the whole prices table."""
+        with get_connection() as conn:
+            plan = conn.execute(
+                "EXPLAIN QUERY PLAN DELETE FROM prices WHERE receipt_id = 1"
+            ).fetchall()
+        detail = " ".join(str(r[-1]) for r in plan)
+        assert "idx_prices_receipt_id" in detail, detail
+        assert "SCAN prices" not in detail, detail
 
     def test_prices_table_has_expected_columns(self, isolated_db):
         with get_connection() as conn:

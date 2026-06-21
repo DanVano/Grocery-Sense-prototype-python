@@ -184,6 +184,11 @@ def create_tables(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_prices_item_coalesced "
         "ON prices(item_id, date(COALESCE(date, created_at)));"
     )
+    # Supports the ON DELETE CASCADE from receipts -> prices; without it a
+    # receipt delete / undo / re-ingest full-scans prices to find rows to cascade.
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_prices_receipt_id ON prices(receipt_id);"
+    )
 
     # --- receipt_line_items ---
     cur.execute(
