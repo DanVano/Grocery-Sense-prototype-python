@@ -6,6 +6,7 @@ from tkinter import ttk
 from typing import Callable, List, Optional
 
 from Grocery_Sense.services.price_drop_alert_service import PriceDropAlert, PriceDropAlertService
+from Grocery_Sense.services.shopping_list_service import ShoppingListService
 
 
 class PriceDropAlertsWindow(tk.Toplevel):
@@ -17,6 +18,7 @@ class PriceDropAlertsWindow(tk.Toplevel):
 
         self._log = log
         self._svc = PriceDropAlertService()
+        self._sl = ShoppingListService()
 
         self._alerts: List[PriceDropAlert] = []
 
@@ -37,6 +39,7 @@ class PriceDropAlertsWindow(tk.Toplevel):
         )
         self._refresh_btn = ttk.Button(top, text="Refresh", command=self._refresh)
         self._refresh_btn.pack(side="right")
+        ttk.Button(top, text="Add to list", command=self._add_selected_to_list).pack(side="right", padx=(0, 6))
 
         self._status_var = tk.StringVar(value="")
         ttk.Label(root, textvariable=self._status_var, foreground="#666").pack(anchor="w", pady=(0, 4))
@@ -159,6 +162,25 @@ class PriceDropAlertsWindow(tk.Toplevel):
                 self._log(f"Loaded {len(self._alerts)} price alerts")
             except Exception:
                 pass
+
+    def _add_selected_to_list(self) -> None:
+        from tkinter import messagebox
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showinfo("Select an alert", "Select an alert first.", parent=self)
+            return
+        i = int(sel[0])
+        if i < 0 or i >= len(self._alerts):
+            return
+        a = self._alerts[i]
+        qty = a.suggested_qty if a.suggested_qty and a.suggested_qty > 0 else 1
+        self._sl.add_single_item(
+            name=a.item_name, quantity=qty, unit=a.unit or "each",
+            added_by="price_drop_alerts_ui", auto_map=True,
+        )
+        if self._log:
+            self._log(f"Added to list: {a.item_name} (qty {qty})")
+        messagebox.showinfo("Added", f"Added {a.item_name} (qty {qty:g}) to your shopping list.", parent=self)
 
     def _on_select(self) -> None:
         sel = self.tree.selection()
