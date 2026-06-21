@@ -41,7 +41,6 @@ from Grocery_Sense.services.weekly_planner_service import (
     WeeklyPlannerService,
     summarize_weekly_plan,
 )
-from Grocery_Sense.services.planning_service import PlanningService
 from Grocery_Sense.services.demo_seed_service import seed_demo_data
 
 from Grocery_Sense.ui.basket_optimizer_window import open_basket_optimizer_window
@@ -94,8 +93,6 @@ class GrocerySenseApp(tk.Tk):
             meal_suggestion_service=self.meal_suggestion_service,
             shopping_list_service=self.shopping_list_service,
         )
-        self.planning_service = PlanningService()
-
 
         self._build_main_menu()
         self._build_log_panel()
@@ -768,112 +765,6 @@ class GrocerySenseApp(tk.Tk):
 
         build_btn.config(command=self._safe_call(build_plan))
         commit_btn.config(command=self._safe_call(commit_plan))
-
-    # ------------------------------------------------------------------
-    # Store Plan (simple renderer)
-    # ------------------------------------------------------------------
-
-    def _open_store_plan_window(self) -> None:
-        win = tk.Toplevel(self)
-        win.title("Store Plan")
-        win.geometry("900x600")
-
-        root = ttk.Frame(win)
-        root.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-
-        header = ttk.Frame(root)
-        header.pack(fill=tk.X)
-
-        ttk.Label(header, text="Store Plan", font=("Segoe UI", 12, "bold")).pack(side=tk.LEFT)
-
-        ttk.Label(header, text="Max stores:").pack(side=tk.LEFT, padx=(20, 6))
-        max_var = tk.StringVar(value="3")
-        max_entry = ttk.Entry(header, textvariable=max_var, width=6)
-        max_entry.pack(side=tk.LEFT)
-
-        output = ScrolledText(root, state=tk.NORMAL)
-        output.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
-
-        refresh_btn = ttk.Button(header, text="Refresh")
-        refresh_btn.pack(side=tk.RIGHT)
-
-        def render_plan() -> None:
-            try:
-                max_stores = int((max_var.get() or "3").strip())
-                if max_stores < 1:
-                    max_stores = 1
-            except ValueError:
-                max_stores = 3
-
-            output.delete("1.0", tk.END)
-            output.insert(tk.END, "Building store plan…\n")
-            refresh_btn.config(state="disabled")
-
-            # The plan build runs DB-heavy work; do it off the Tk main thread and
-            # marshal the result back so the window doesn't freeze. All widget
-            # access stays inside _render (main thread).
-            def worker():
-                try:
-                    plan = self.planning_service.build_plan_for_active_list(max_stores=max_stores)
-                    win.after(0, lambda: _render(plan, None))
-                except Exception as exc:
-                    win.after(0, lambda e=exc: _render(None, e))
-
-            def _render(plan, error) -> None:
-                if not win.winfo_exists():
-                    return
-                refresh_btn.config(state="normal")
-                output.delete("1.0", tk.END)
-                if error is not None:
-                    output.insert(tk.END, f"Error: {error}\n")
-                    self._log(f"Store plan error: {error}")
-                    return
-
-                summary = str(plan.get("summary") or "")
-                output.insert(tk.END, summary + "\n\n")
-
-                stores_struct = plan.get("stores") or {}
-                if not stores_struct:
-                    output.insert(tk.END, "(No stores selected)\n")
-                else:
-                    store_rows = []
-                    for sid, payload in stores_struct.items():
-                        items = payload.get("items") or []
-                        store_rows.append((sid, payload, len(items)))
-                    store_rows.sort(key=lambda x: x[2], reverse=True)
-
-                    for _sid, payload, _count in store_rows:
-                        st = payload.get("store")
-                        items = payload.get("items") or []
-                        if not st:
-                            continue
-
-                        fav = " ★" if getattr(st, "is_favorite", False) else ""
-                        pri = getattr(st, "priority", 0) or 0
-                        output.insert(tk.END, f"{st.name}{fav} (priority={pri})\n")
-                        for it in items:
-                            qty = "" if it.quantity is None else str(it.quantity)
-                            unit = "" if it.unit is None else str(it.unit)
-                            mapped = "" if it.item_id is None else f" [item_id={it.item_id}]"
-                            output.insert(tk.END, f"  - {it.display_name} {qty} {unit}{mapped}\n")
-                        output.insert(tk.END, "\n")
-
-                unassigned = plan.get("unassigned") or []
-                if unassigned:
-                    output.insert(tk.END, "Unassigned:\n")
-                    for it in unassigned:
-                        qty = "" if it.quantity is None else str(it.quantity)
-                        unit = "" if it.unit is None else str(it.unit)
-                        mapped = "" if it.item_id is None else f" [item_id={it.item_id}]"
-                        output.insert(tk.END, f"  - {it.display_name} {qty} {unit}{mapped}\n")
-                    output.insert(tk.END, "\n")
-
-            threading.Thread(target=worker, daemon=True).start()
-
-        refresh_btn.config(command=self._safe_call(render_plan))
-
-        render_plan()
-
 
     # ------------------------------------------------------------------
     # Flyer sync + price-drop alerts
