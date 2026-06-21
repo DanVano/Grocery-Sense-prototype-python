@@ -48,6 +48,7 @@ from Grocery_Sense.ui.basket_optimizer_window import open_basket_optimizer_windo
 from Grocery_Sense.ui.deal_feed_window import open_deal_feed_window
 from Grocery_Sense.ui.flyer_import_window import open_flyer_import_window
 from Grocery_Sense.ui.item_manager_window import open_item_manager_window
+from Grocery_Sense.ui.list_audit_window import open_list_audit_window
 from Grocery_Sense.ui.preference_window import open_preferences_window
 from Grocery_Sense.ui.price_history_window import open_price_history_window
 from Grocery_Sense.ui.receipt_import_window import open_receipt_import_window
@@ -155,6 +156,7 @@ class GrocerySenseApp(tk.Tk):
         sections = [
             ("Shop", [
                 ("Shopping List", self._open_shopping_list_window),
+                ("List Price Audit", lambda: open_list_audit_window(self, log=self._log)),
                 ("Deal Feed", lambda: open_deal_feed_window(self, log=self._log)),
                 ("Basket Optimizer", lambda: open_basket_optimizer_window(self, log=self._log)),
                 ("Store Plan (savings)", lambda: open_store_plan_window(self, log=self._log)),
