@@ -10,11 +10,15 @@ from Grocery_Sense.data.repositories import stores_repo
 
 
 class StoreSettingsWindow(tk.Toplevel):
-    """Let the user choose which stores they shop at and mark favourites."""
+    """Pick which stores you shop at and set their distance.
+
+    Favourite/priority/archive live in Stores Management — this window owns the
+    shop-here selection and distance, which the Basket Optimizer relies on.
+    """
 
     def __init__(self, master: Optional[tk.Misc] = None, *, log: Optional[Callable[[str], None]] = None) -> None:
         super().__init__(master)
-        self.title("Store Settings")
+        self.title("Store Shopping Selection")
         self.geometry("680x480")
         self.minsize(560, 360)
         self._log = log or (lambda _: None)
@@ -28,7 +32,7 @@ class StoreSettingsWindow(tk.Toplevel):
 
         ttk.Label(
             root,
-            text="Choose which stores you shop at and mark favourites.",
+            text="Choose which stores you shop at and set distance. (Favourites are managed in Stores Management.)",
             foreground="#444",
         ).pack(anchor="w", pady=(0, 8))
 
@@ -56,7 +60,6 @@ class StoreSettingsWindow(tk.Toplevel):
         btn_row = ttk.Frame(root)
         btn_row.pack(fill="x", pady=(8, 0))
         ttk.Button(btn_row, text="Toggle Shop Here", command=self._toggle_shop_here).pack(side="left", padx=(0, 6))
-        ttk.Button(btn_row, text="Toggle Favourite", command=self._toggle_favourite).pack(side="left", padx=(0, 6))
         ttk.Button(btn_row, text="Refresh", command=self._refresh).pack(side="left")
         ttk.Button(btn_row, text="Close", command=self.destroy).pack(side="right")
 
@@ -105,18 +108,6 @@ class StoreSettingsWindow(tk.Toplevel):
             messagebox.showerror("Error", str(exc), parent=self)
             return
         self._log(f"[StoreSettings] {'Enabled' if not store.shop_here else 'Disabled'} shop_here for {store.name}")
-        self._refresh()
-
-    def _toggle_favourite(self) -> None:
-        store = self._selected_store()
-        if store is None:
-            return
-        try:
-            stores_repo.set_store_favorite(store.id, not store.is_favorite)
-        except Exception as exc:
-            messagebox.showerror("Error", str(exc), parent=self)
-            return
-        self._log(f"[StoreSettings] {'Starred' if not store.is_favorite else 'Unstarred'} {store.name}")
         self._refresh()
 
     def _save_distance(self) -> None:
