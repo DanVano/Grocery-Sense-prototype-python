@@ -98,6 +98,12 @@ def get_connection(base_dir: Optional[Path] = None) -> sqlite3.Connection:
     # "database is locked" when background threads (flyer sync, alert check)
     # overlap on the same file.
     conn.execute("PRAGMA busy_timeout = 5000")
+    # Per-connection performance pragmas (not persistent like WAL, so set every
+    # open). None affect durability under WAL + synchronous=NORMAL.
+    # ponytail: fixed sizes; bump only if a profiler on a real large DB says so.
+    conn.execute("PRAGMA cache_size = -16000")   # ~16 MB page cache (negative = KB)
+    conn.execute("PRAGMA temp_store = MEMORY")    # temp B-trees / sorts in RAM
+    conn.execute("PRAGMA mmap_size = 268435456")  # memory-map up to 256 MB of the DB
     if str(db_path) not in _integrity_checked and str(db_path) != ":memory:":
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA synchronous = NORMAL")
