@@ -2,7 +2,6 @@
 M1 — connection.py
 
 Covers:
-  - get_db_path defaults + base_dir override
   - _TEST_DB_PATH overrides get_connection target
   - sqlite3.Row factory is enabled
   - integrity check runs on first connection and caches per-path
@@ -16,23 +15,6 @@ import sqlite3
 import pytest
 
 from Grocery_Sense.data import connection as _conn
-
-
-# ---------------------------------------------------------------------------
-# get_db_path
-# ---------------------------------------------------------------------------
-
-
-class TestGetDbPath:
-    def test_default_directory_is_created(self, tmp_path):
-        path = _conn.get_db_path(base_dir=tmp_path / "alt")
-        assert (tmp_path / "alt").is_dir()
-        assert path.name == _conn.DB_FILENAME
-
-    def test_path_ends_in_filename(self, tmp_path):
-        path = _conn.get_db_path(base_dir=tmp_path)
-        assert path.parent == tmp_path
-        assert path.name == "grocery_sense.db"
 
 
 # ---------------------------------------------------------------------------
@@ -60,26 +42,6 @@ class TestGetConnection:
             assert conn.row_factory is sqlite3.Row
         finally:
             conn.close()
-
-    def test_base_dir_override_ignored_when_test_path_set(self, tmp_path, monkeypatch):
-        """
-        When _TEST_DB_PATH is set, base_dir is bypassed — confirming that tests
-        can never accidentally touch a production path.
-        """
-        test_db = tmp_path / "a.db"
-        monkeypatch.setattr(_conn, "_TEST_DB_PATH", str(test_db))
-        monkeypatch.setattr(_conn, "_integrity_checked", set())
-
-        conn = _conn.get_connection(base_dir=tmp_path / "should_be_ignored")
-        try:
-            # Write something to prove we're on the test path, not the override.
-            conn.execute("CREATE TABLE marker (x INTEGER)")
-            conn.execute("INSERT INTO marker VALUES (1)")
-            conn.commit()
-        finally:
-            conn.close()
-        assert test_db.exists()
-        assert not (tmp_path / "should_be_ignored").exists()
 
 
 # ---------------------------------------------------------------------------

@@ -5,7 +5,6 @@ SQLite schema definition and initialization for the Price app backend.
 """
 
 from typing import Optional
-from pathlib import Path
 import sqlite3
 
 
@@ -510,7 +509,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     _migrate_receipt_support_tables(conn)
 
 
-def initialize_database(base_dir: Optional[Path] = None) -> None:
+def initialize_database() -> None:
     """
     Convenience helper: open a connection, create tables, close it.
 
@@ -518,7 +517,7 @@ def initialize_database(base_dir: Optional[Path] = None) -> None:
     """
     from .connection import get_connection  # local import to avoid cycles
 
-    conn = get_connection(base_dir)
+    conn = get_connection()
     try:
         create_tables(conn)
         _migrate(conn)

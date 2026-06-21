@@ -32,18 +32,12 @@ def current_db_path() -> Path:
     return get_db_path()
 
 
-def get_db_path(base_dir: Optional[Path] = None) -> Path:
+def get_db_path() -> Path:
     """
-    Return the full path to the DB file.
-
-    If base_dir is None, we put the DB inside the 'db' directory next to this file:
-        src/grocery_sense/data/db/Grocery_Sense.db
+    Return the full path to the DB file, inside the 'db' directory next to this
+    file: src/grocery_sense/data/db/grocery_sense.db
     """
-    if base_dir is None:
-        base_dir = Path(__file__).resolve().parent / "db"
-    else:
-        base_dir = Path(base_dir)
-
+    base_dir = Path(__file__).resolve().parent / "db"
     base_dir.mkdir(parents=True, exist_ok=True)
     return base_dir / DB_FILENAME
 
@@ -72,11 +66,10 @@ def _check_integrity(conn: sqlite3.Connection, db_path: Path) -> None:
     _integrity_checked.add(path_key)
 
 
-def get_connection(base_dir: Optional[Path] = None) -> sqlite3.Connection:
+def get_connection() -> sqlite3.Connection:
     """
     Open a SQLite connection to our DB.
 
-    base_dir is optional; if not provided, we use the default 'db' directory.
     On the first connection per process, runs PRAGMA integrity_check and raises
     RuntimeError immediately if corruption is detected.
     """
@@ -90,7 +83,7 @@ def get_connection(base_dir: Optional[Path] = None) -> sqlite3.Connection:
             )
         db_path = Path(_TEST_DB_PATH)
     else:
-        db_path = get_db_path(base_dir)
+        db_path = get_db_path()
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row  # nicer dict-like access
     conn.execute("PRAGMA foreign_keys = ON")
@@ -112,7 +105,7 @@ def get_connection(base_dir: Optional[Path] = None) -> sqlite3.Connection:
 
 
 @contextmanager
-def connection_scope(base_dir: Optional[Path] = None) -> Iterator[sqlite3.Connection]:
+def connection_scope() -> Iterator[sqlite3.Connection]:
     """
     Open a connection, commit on clean exit, roll back on error, and ALWAYS close.
 
@@ -122,7 +115,7 @@ def connection_scope(base_dir: Optional[Path] = None) -> Iterator[sqlite3.Connec
     GC. This wrapper preserves the commit-on-success / rollback-on-error
     semantics and adds deterministic close.
     """
-    conn = get_connection(base_dir)
+    conn = get_connection()
     try:
         yield conn
         conn.commit()
