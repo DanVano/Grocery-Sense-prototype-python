@@ -4,14 +4,10 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Tuple, Optional
+from typing import Any, Dict
 
 from azure.ai.documentintelligence import DocumentIntelligenceClient
 from azure.core.credentials import AzureKeyCredential
-
-
-def _now_utc_compact() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
 @dataclass(frozen=True)
@@ -31,10 +27,10 @@ class FlyerDocIntClient:
       DOCUMENTINTELLIGENCE_API_KEY
     """
 
-    def __init__(self, endpoint: Optional[str] = None, api_key: Optional[str] = None, locale: str = "en-US") -> None:
-        self.endpoint = (endpoint or os.environ.get("DOCUMENTINTELLIGENCE_ENDPOINT", "")).strip()
-        self.api_key = (api_key or os.environ.get("DOCUMENTINTELLIGENCE_API_KEY", "")).strip()
-        self.locale = locale
+    def __init__(self) -> None:
+        self.endpoint = os.environ.get("DOCUMENTINTELLIGENCE_ENDPOINT", "").strip()
+        self.api_key = os.environ.get("DOCUMENTINTELLIGENCE_API_KEY", "").strip()
+        self.locale = "en-US"
 
         if not self.endpoint or not self.api_key:
             raise RuntimeError(
@@ -63,6 +59,7 @@ class FlyerDocIntClient:
 
         operation_id = str(poller.details.get("operation_id") or "").strip()
         if not operation_id:
-            operation_id = f"layout_{_now_utc_compact()}_{p.stem}"
+            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            operation_id = f"layout_{ts}_{p.stem}"
 
         return AzureLayoutResult(operation_id=operation_id, analyze_result=result.as_dict())

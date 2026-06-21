@@ -3,8 +3,8 @@ M2 — FlyerDocIntClient
 
 Covers:
   - Credential enforcement: RuntimeError when env vars missing
-  - Explicit endpoint/api_key override
-  - Locale passthrough to the SDK
+  - Env vars populate endpoint/api_key fields
+  - Locale passthrough to the SDK (en-US)
   - analyze_layout_file raises FileNotFoundError before calling Azure
   - analyze_layout_file happy path (SDK monkeypatched) returns AzureLayoutResult
 """
@@ -70,25 +70,13 @@ class TestConstruction:
         with pytest.raises(RuntimeError, match="Missing Azure"):
             FlyerDocIntClient()
 
-    def test_explicit_args_override_env(self, monkeypatch):
-        monkeypatch.delenv("DOCUMENTINTELLIGENCE_ENDPOINT", raising=False)
-        monkeypatch.delenv("DOCUMENTINTELLIGENCE_API_KEY", raising=False)
-        client = FlyerDocIntClient(endpoint="https://fake/", api_key="fake-key")
-        assert client.endpoint == "https://fake/"
-        assert client.api_key == "fake-key"
-
     def test_env_vars_populate_fields(self, monkeypatch):
         monkeypatch.setenv("DOCUMENTINTELLIGENCE_ENDPOINT", "https://env/")
         monkeypatch.setenv("DOCUMENTINTELLIGENCE_API_KEY", "env-key")
         client = FlyerDocIntClient()
         assert client.endpoint == "https://env/"
         assert client.api_key == "env-key"
-
-    def test_locale_stored(self, monkeypatch):
-        monkeypatch.setenv("DOCUMENTINTELLIGENCE_ENDPOINT", "https://env/")
-        monkeypatch.setenv("DOCUMENTINTELLIGENCE_API_KEY", "env-key")
-        client = FlyerDocIntClient(locale="fr-CA")
-        assert client.locale == "fr-CA"
+        assert client.locale == "en-US"
 
 
 # ---------------------------------------------------------------------------
