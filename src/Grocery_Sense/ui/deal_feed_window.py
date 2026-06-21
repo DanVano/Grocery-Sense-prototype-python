@@ -6,6 +6,7 @@ from tkinter import ttk, messagebox
 from typing import Any, Callable, Dict, List, Optional
 
 from Grocery_Sense.data.repositories.flyers_repo import FlyersRepo
+from Grocery_Sense.services.shopping_list_service import ShoppingListService
 
 
 class DealFeedWindow(tk.Toplevel):
@@ -19,6 +20,7 @@ class DealFeedWindow(tk.Toplevel):
 
         self._log = log
         self._repo = FlyersRepo()
+        self._sl = ShoppingListService()
 
         self._store_label_to_id: Dict[str, Optional[int]] = {"All stores": None}
         self._store_var = tk.StringVar(value="All stores")
@@ -82,8 +84,11 @@ class DealFeedWindow(tk.Toplevel):
             command=self._refresh,
         ).grid(row=1, column=2, columnspan=2, sticky="w", pady=(8, 0))
 
-        self._refresh_btn = ttk.Button(filters, text="Refresh", command=self._refresh)
-        self._refresh_btn.grid(row=0, column=4, sticky="e")
+        btns = ttk.Frame(filters)
+        btns.grid(row=0, column=4, sticky="e")
+        ttk.Button(btns, text="Add to list", command=self._add_selected_to_list).pack(side="left", padx=(0, 6))
+        self._refresh_btn = ttk.Button(btns, text="Refresh", command=self._refresh)
+        self._refresh_btn.pack(side="left")
         filters.columnconfigure(4, weight=1)
 
         self._status_var = tk.StringVar(value="")
@@ -356,6 +361,34 @@ class DealFeedWindow(tk.Toplevel):
             self._on_selected()
         else:
             self._set_detail("No active deals matched your filters.")
+
+    def _add_selected_to_list(self) -> None:
+        sel = self._tree.selection()
+        if not sel:
+            messagebox.showinfo("Select a deal", "Select a deal first.", parent=self)
+            return
+        try:
+            idx = int(sel[0])
+        except Exception:
+            return
+        if idx < 0 or idx >= len(self._filtered_deals):
+            return
+        d = self._filtered_deals[idx]
+        name = str(d.get("title") or "").strip()
+        if not name:
+            return
+        soft_by = d.get("pref_soft_excluders_all", [])
+        notes = ""
+        if isinstance(soft_by, list) and soft_by:
+            notes = "Soft-excluded by: " + ", ".join(str(x) for x in soft_by)
+        item_id = d.get("item_id")
+        self._sl.add_single_item(
+            name=name, quantity=1, unit=str(d.get("unit") or "each"),
+            notes=notes or None, added_by="deal_feed_ui",
+            item_id=int(item_id) if item_id is not None else None, auto_map=True,
+        )
+        self._log_msg(f"DealFeed: added '{name}' to shopping list")
+        messagebox.showinfo("Added", f"Added '{name}' to your shopping list.", parent=self)
 
     def _on_selected(self) -> None:
         sel = self._tree.selection()
