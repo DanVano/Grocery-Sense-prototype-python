@@ -12,6 +12,7 @@ from Grocery_Sense.data.repositories.prices_repo import (
     get_most_recent_prices_global_batch,
     get_price_stats_batch,
 )
+from Grocery_Sense.services.budget_service import get_gas_cost_per_km
 
 # Preferences (optional; code fails-safe if not present)
 try:
@@ -44,7 +45,6 @@ def _compute_trip_penalty(store_a, store_b) -> float:
     distance is unknown — the warning in BasketOptimizationResult discloses this.
     """
     try:
-        from Grocery_Sense.services.budget_service import get_gas_cost_per_km
         gas_rate = get_gas_cost_per_km()
     except Exception:
         gas_rate = 0.18
@@ -401,7 +401,6 @@ class BasketOptimizerService:
             distances = [d for d in (d_a, d_b) if d is not None and d > 0]
             if distances:
                 try:
-                    from Grocery_Sense.services.budget_service import get_gas_cost_per_km
                     gas_rate = get_gas_cost_per_km()
                 except Exception:
                     gas_rate = 0.18
