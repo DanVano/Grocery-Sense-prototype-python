@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import os
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
@@ -353,20 +354,27 @@ def _read_raw_config() -> Dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _write_raw_config(data: Dict[str, Any]) -> None:
-    # Atomic write via temp-file + rename so a crash mid-write doesn't leave
-    # an empty/partial user_config.json (which would silently reset the user's
-    # household / preferences on next launch).
-    import os as _os
-    tmp = _CONFIG_FILE.with_suffix(_CONFIG_FILE.suffix + ".tmp")
+def atomic_write_json(path: Path, data: Any, **dump_kwargs: Any) -> None:
+    """Write *data* as JSON to *path* via temp-file + fsync + rename, so a crash
+    mid-write never leaves a truncated/partial file. Extra kwargs pass through to
+    json.dump (indent, sort_keys, ensure_ascii, ...)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
     with tmp.open("w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, sort_keys=True)
+        json.dump(data, f, **dump_kwargs)
         f.flush()
         try:
-            _os.fsync(f.fileno())
+            os.fsync(f.fileno())
         except Exception:
             pass
-    tmp.replace(_CONFIG_FILE)
+    tmp.replace(path)
+
+
+def _write_raw_config(data: Dict[str, Any]) -> None:
+    # Atomic write so a crash mid-write doesn't leave an empty/partial
+    # user_config.json (which would silently reset the user's household /
+    # preferences on next launch).
+    atomic_write_json(_CONFIG_FILE, data, indent=2, sort_keys=True)
 
 
 def _member_from_raw(raw: Dict[str, Any]) -> HouseholdMember:
@@ -721,16 +729,7 @@ def _load_cache() -> Dict[str, Any]:
 def _save_cache(data: Dict[str, Any]) -> None:
     """Atomic write so a crash mid-flush doesn't truncate the cache."""
     global _deals_cache, _deals_cache_key
-    import os as _os
-    tmp = _CACHE_FILE.with_suffix(_CACHE_FILE.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-        f.flush()
-        try:
-            _os.fsync(f.fileno())
-        except Exception:
-            pass
-    tmp.replace(_CACHE_FILE)
+    atomic_write_json(_CACHE_FILE, data, ensure_ascii=False, indent=2)
     with _deals_cache_lock:
         _deals_cache = data
         _deals_cache_key = _deals_stat_key()
