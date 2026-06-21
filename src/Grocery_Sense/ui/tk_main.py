@@ -147,178 +147,58 @@ class GrocerySenseApp(tk.Tk):
         frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
 
         ttk.Label(frame, text="Grocery Sense - Main Menu", font=("Segoe UI", 14, "bold")).grid(
-            row=0, column=0, columnspan=2, sticky="w", pady=(0, 10)
+            row=0, column=0, columnspan=3, sticky="w", pady=(0, 8)
         )
 
-        row = 1
+        # Buttons grouped by task so the user can scan by intent instead of
+        # hunting through a flat 1-21 list. Each tuple is (label, command).
+        sections = [
+            ("Shop", [
+                ("Shopping List", self._open_shopping_list_window),
+                ("Deal Feed", lambda: open_deal_feed_window(self, log=self._log)),
+                ("Basket Optimizer", lambda: open_basket_optimizer_window(self, log=self._log)),
+                ("Store Plan (savings)", lambda: open_store_plan_window(self, log=self._log)),
+            ]),
+            ("Plan", [
+                ("Meal Suggestions", self._open_meal_suggestions_window),
+                ("Weekly Plan", self._open_weekly_plan_window),
+                ("Plan My Week (guided)", self._open_plan_my_week_window),
+                ("Price Drop Alerts", lambda: open_price_drop_alerts_window(self, log=self._log)),
+            ]),
+            ("Receipts & Prices", [
+                ("Receipt Import (Azure)", lambda: open_receipt_import_window(self, log=self._log)),
+                ("Receipt Browser", lambda: open_receipt_browser_window(self, log=self._log)),
+                ("Flyer Import (Manual)", lambda: open_flyer_import_window(self, log=self._log)),
+                ("Price History", lambda: open_price_history_window(self)),
+                ("Budget Tracker", lambda: open_budget_window(self, log=self._log)),
+            ]),
+            ("Catalog & Stores", [
+                ("Item Manager", lambda: open_item_manager_window(self, log=self._log)),
+                ("Stores Management", self._open_stores_management_window),
+                ("Store Shopping Selection", lambda: open_store_settings_window(self, log=self._log)),
+            ]),
+            ("Setup & Data", [
+                ("Initialize / Verify DB", self._handle_init_db),
+                ("Preferences", lambda: open_preferences_window(self, log=self._log)),
+                ("Seed Demo Data", self._seed_demo_data),
+                ("Sync Flyers", self._manual_sync_flyers),
+                ("Backup Database", self._backup_database),
+                ("Export Data (CSV/JSON)", self._export_data),
+            ]),
+        ]
 
-        ttk.Button(
-            frame,
-            text="1) Initialize / Verify Database",
-            command=self._safe_call(self._handle_init_db),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
-
-        ttk.Button(
-            frame,
-            text="2) Shopping List",
-            command=self._safe_call(self._open_shopping_list_window),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
-
-        ttk.Button(
-            frame,
-            text="3) Meal Suggestions",
-            command=self._safe_call(self._open_meal_suggestions_window),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
-
-        ttk.Button(
-            frame,
-            text="4) Build Weekly Plan",
-            command=self._safe_call(self._open_weekly_plan_window),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
-
-        ttk.Button(
-            frame,
-            text="5) Receipt Import (Azure)",
-            command=self._safe_call(lambda: open_receipt_import_window(self, log=self._log)),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
-
-        ttk.Button(
-            frame,
-            text="6) Receipt Browser + Delete/Undo",
-            command=self._safe_call(lambda: open_receipt_browser_window(self, log=self._log)),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
-
-        ttk.Button(
-            frame,
-            text="7) Stores Management",
-            command=self._safe_call(self._open_stores_management_window),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
-
-        ttk.Button(
-            frame,
-            text="8) Store Plan (with savings)",
-            command=self._safe_call(lambda: open_store_plan_window(self, log=self._log)),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
-
-        ttk.Button(
-            frame,
-            text="9) Price History Viewer",
-            command=self._safe_call(lambda: open_price_history_window(self)),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
-
-        ttk.Button(
-            frame,
-            text="10) Item Manager",
-            command=self._safe_call(lambda: open_item_manager_window(self, log=self._log)),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
-
-        ttk.Button(
-            frame,
-            text="11) Preferences",
-            command=self._safe_call(lambda: open_preferences_window(self, log=self._log)),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
-
-        ttk.Button(
-            frame,
-            text="12) Deal Feed (Active)",
-            command=self._safe_call(lambda: open_deal_feed_window(self, log=self._log)),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
-
-        ttk.Button(
-            frame,
-            text="13) Basket Optimizer (NEW)",
-            command=self._safe_call(lambda: open_basket_optimizer_window(self, log=self._log)),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
-
-        ttk.Button(
-            frame,
-            text="14) Flyer Import (Manual)",
-            command=self._safe_call(lambda: open_flyer_import_window(self, log=self._log)),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
-
-        ttk.Button(
-            frame,
-            text="15) Seed Demo Data",
-            command=self._safe_call(self._seed_demo_data),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
-
-        ttk.Button(
-            frame,
-            text="16) Sync Flyers",
-            command=self._safe_call(self._manual_sync_flyers),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
-
-        ttk.Button(
-            frame,
-            text="17) Budget Tracker",
-            command=self._safe_call(lambda: open_budget_window(self, log=self._log)),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
-
-        ttk.Button(
-            frame,
-            text="18) Store Settings",
-            command=self._safe_call(lambda: open_store_settings_window(self, log=self._log)),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
-
-        ttk.Button(
-            frame,
-            text="19) Price Drop Alerts",
-            command=self._safe_call(lambda: open_price_drop_alerts_window(self, log=self._log)),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
-
-        ttk.Button(
-            frame,
-            text="20) Backup Database",
-            command=self._safe_call(self._backup_database),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
-
-        ttk.Button(
-            frame,
-            text="21) Export Data (CSV / JSON)",
-            command=self._safe_call(self._export_data),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
+        grid_row = 1
+        for title, buttons in sections:
+            section = ttk.LabelFrame(frame, text=title)
+            section.grid(row=grid_row, column=0, columnspan=3, sticky="ew", pady=(0, 6))
+            for i, (label, command) in enumerate(buttons):
+                ttk.Button(
+                    section,
+                    text=label,
+                    command=self._safe_call(command),
+                    width=28,
+                ).grid(row=i // 3, column=i % 3, sticky="w", padx=4, pady=3)
+            grid_row += 1
 
     def _backup_database(self) -> None:
         from Grocery_Sense.services.db_maintenance_service import backup_database
@@ -485,11 +365,15 @@ class GrocerySenseApp(tk.Tk):
         list_frame.columnconfigure(0, weight=1)
 
         current_items = []
+        hide_checked_var = tk.BooleanVar(value=True)
 
         def refresh() -> None:
             nonlocal current_items
             listbox.delete(0, tk.END)
-            current_items = self.shopping_list_service.get_active_items(include_checked_off=True)
+            items = self.shopping_list_service.get_active_items(include_checked_off=True)
+            if hide_checked_var.get():
+                items = [it for it in items if not it.is_checked_off]
+            current_items = items
 
             if not current_items:
                 listbox.insert(tk.END, "(no items)")
@@ -585,6 +469,10 @@ class GrocerySenseApp(tk.Tk):
             side=tk.LEFT, padx=(0, 8)
         )
         ttk.Button(btn_frame, text="Delete", command=self._safe_call(on_delete_item)).pack(side=tk.LEFT)
+        ttk.Checkbutton(
+            btn_frame, text="Hide checked-off", variable=hide_checked_var,
+            command=self._safe_call(refresh),
+        ).pack(side=tk.RIGHT)
 
         win.bind("<Return>", lambda _e: on_add_item())
 
@@ -631,6 +519,28 @@ class GrocerySenseApp(tk.Tk):
             details.insert(tk.END, explain_suggested_meal(s))
 
         listbox.bind("<<ListboxSelect>>", on_select)
+
+        def on_add_to_list():
+            idxs = listbox.curselection()
+            if not idxs:
+                self._log("Meal Suggestions: select a recipe first.")
+                return
+            s = suggestions[int(idxs[0])]
+            ings = [str(x).strip() for x in (s.recipe.get("ingredients") or []) if str(x).strip()]
+            if not ings:
+                messagebox.showinfo("No ingredients", "This recipe lists no ingredients.", parent=win)
+                return
+            for name in ings:
+                self.shopping_list_service.add_single_item(
+                    name=name, quantity=1, unit="each", added_by="meal_suggestions_ui", auto_map=True
+                )
+            recipe_name = s.recipe.get("name") or s.recipe.get("title") or "recipe"
+            self._log(f"Added {len(ings)} ingredient(s) from {recipe_name} to shopping list.")
+            messagebox.showinfo("Added", f"Added {len(ings)} ingredient(s) to your shopping list.", parent=win)
+
+        ttk.Button(
+            top_frame, text="Add ingredients to list", command=self._safe_call(on_add_to_list)
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
         def worker():
             try:
@@ -734,6 +644,128 @@ class GrocerySenseApp(tk.Tk):
 
         build_btn.config(command=self._safe_call(build_plan))
         build_plan()
+
+    # ------------------------------------------------------------------
+    # Plan My Week (guided: plan -> review -> add -> optimize)
+    # ------------------------------------------------------------------
+
+    def _open_plan_my_week_window(self) -> None:
+        win = tk.Toplevel(self)
+        win.title("Plan My Week")
+        win.geometry("900x640")
+
+        ttk.Label(win, text="Plan My Week", font=("Segoe UI", 12, "bold")).pack(
+            side=tk.TOP, anchor="w", padx=10, pady=(10, 4)
+        )
+
+        controls = ttk.Frame(win)
+        controls.pack(side=tk.TOP, fill=tk.X, padx=10)
+        ttk.Label(controls, text="Recipes:").pack(side=tk.LEFT)
+        count_var = tk.IntVar(value=6)
+        ttk.Spinbox(controls, from_=1, to=14, textvariable=count_var, width=5).pack(side=tk.LEFT, padx=(6, 12))
+        build_btn = ttk.Button(controls, text="1) Build plan")
+        build_btn.pack(side=tk.LEFT, padx=(0, 8))
+        commit_btn = ttk.Button(controls, text="2) Add to list & optimize stores", state="disabled")
+        commit_btn.pack(side=tk.LEFT)
+
+        box = ScrolledText(win, state=tk.NORMAL)
+        box.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Holds the reviewed plan between step 1 and step 2 so we commit the exact
+        # recipes the user saw, not a freshly re-rolled (different) set.
+        state = {"plan": None}
+
+        def build_plan():
+            build_btn.config(state="disabled")
+            commit_btn.config(state="disabled")
+            box.delete("1.0", tk.END)
+            box.insert(tk.END, "Building plan…\n")
+
+            def worker():
+                try:
+                    plan = self.weekly_planner_service.build_weekly_plan(
+                        num_recipes=int(count_var.get()),
+                        persist_to_shopping_list=False,
+                    )
+                    win.after(0, lambda: _show_plan(plan, None))
+                except Exception as exc:
+                    win.after(0, lambda: _show_plan(None, exc))
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def _show_plan(plan, error):
+            if not win.winfo_exists():
+                return
+            build_btn.config(state="normal")
+            box.delete("1.0", tk.END)
+            if error is not None:
+                box.insert(tk.END, f"Error: {error}\n")
+                messagebox.showerror("Plan My Week Failed", str(error), parent=win)
+                return
+            if not plan.suggestions:
+                box.insert(tk.END, "No meals could be planned (recipe catalog empty?).\n")
+                return
+            state["plan"] = plan
+            box.insert(tk.END, "Review this plan, then click step 2 to commit it.\n\n")
+            for line in summarize_weekly_plan(plan):
+                box.insert(tk.END, line + "\n")
+            box.insert(tk.END, "\nIngredients to be added:\n")
+            for ing in plan.planned_ingredients:
+                box.insert(tk.END, f"  - {ing.name} (in {ing.approximate_count} recipe(s))\n")
+            commit_btn.config(state="normal")
+
+        def commit_plan():
+            plan = state.get("plan")
+            if plan is None:
+                return
+            commit_btn.config(state="disabled")
+            build_btn.config(state="disabled")
+            box.insert(tk.END, "\nAdding ingredients and optimizing stores…\n")
+
+            def worker():
+                try:
+                    for ing in plan.planned_ingredients:
+                        self.shopping_list_service.add_single_item(
+                            name=ing.name,
+                            quantity=max(1.0, float(ing.approximate_count)),
+                            unit="each",
+                            added_by="plan_my_week_ui",
+                            item_id=ing.item_id,
+                            auto_map=True,
+                        )
+                    from Grocery_Sense.services.basket_optimizer_service import BasketOptimizerService
+                    result = BasketOptimizerService().optimize(mode="two_store")
+                    win.after(0, lambda: _show_optimized(len(plan.planned_ingredients), result, None))
+                except Exception as exc:
+                    win.after(0, lambda: _show_optimized(0, None, exc))
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def _show_optimized(added, result, error):
+            if not win.winfo_exists():
+                return
+            build_btn.config(state="normal")
+            if error is not None:
+                box.insert(tk.END, f"Error: {error}\n")
+                messagebox.showerror("Optimize Failed", str(error), parent=win)
+                return
+            self._log(f"Plan My Week: added {added} ingredient(s), optimized {len(result.stores)} store(s).")
+            box.insert(tk.END, f"\nAdded {added} ingredient(s) to your active shopping list.\n")
+            box.insert(tk.END, f"\nOptimized trip ({result.mode}) — estimated total ${result.basket_total_estimated:.2f}\n")
+            if result.save_vs_usual_avg is not None:
+                box.insert(tk.END, f"Save vs usual: ${result.save_vs_usual_avg:.2f}\n")
+            for sp in result.stores:
+                box.insert(
+                    tk.END,
+                    f"  • {sp.store_name}: {len(sp.items)} item(s), ~${sp.total_estimated:.2f}"
+                    f" ({sp.unknown_count} unpriced)\n",
+                )
+            for w in result.warnings:
+                box.insert(tk.END, f"  ! {w}\n")
+            box.see(tk.END)
+
+        build_btn.config(command=self._safe_call(build_plan))
+        commit_btn.config(command=self._safe_call(commit_plan))
 
     # ------------------------------------------------------------------
     # Store Plan (simple renderer)
