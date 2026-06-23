@@ -43,8 +43,11 @@ from Grocery_Sense.services.weekly_planner_service import (
 )
 from Grocery_Sense.services.demo_seed_service import seed_demo_data
 
+from Grocery_Sense.services import family_requests_service
+
 from Grocery_Sense.ui.basket_optimizer_window import open_basket_optimizer_window
 from Grocery_Sense.ui.deal_feed_window import open_deal_feed_window
+from Grocery_Sense.ui.family_requests_window import open_family_requests_window
 from Grocery_Sense.ui.flyer_import_window import open_flyer_import_window
 from Grocery_Sense.ui.item_manager_window import open_item_manager_window
 from Grocery_Sense.ui.list_audit_window import open_list_audit_window
@@ -107,6 +110,10 @@ class GrocerySenseApp(tk.Tk):
         # Cancel background timers cleanly on window close.
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
+        # Refresh the family-picks badge whenever the main window regains focus
+        # (e.g. after closing the shopping-list window where picks are made).
+        self.bind("<FocusIn>", lambda _e: self._refresh_request_badge())
+
     def _on_close(self) -> None:
         try:
             scheduler = getattr(self, "_flyer_scheduler", None)
@@ -125,6 +132,7 @@ class GrocerySenseApp(tk.Tk):
                 initialize_database()
                 self._db_ready.set()
                 self.after(0, lambda: self._log("Database ready."))
+                self.after(0, self._refresh_request_badge)
                 self.after(0, self._flyer_scheduler.start)  # safe: DB is ready
                 threading.Thread(
                     target=self._check_price_drop_alerts, daemon=True
@@ -145,8 +153,19 @@ class GrocerySenseApp(tk.Tk):
         frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
 
         ttk.Label(frame, text="Grocery Sense - Main Menu", font=("Segoe UI", 14, "bold")).grid(
-            row=0, column=0, columnspan=3, sticky="w", pady=(0, 8)
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 8)
         )
+
+        # Family-picks notification badge (parent review queue). Text is bound to
+        # _requests_badge_var and refreshed by _refresh_request_badge().
+        self._requests_badge_var = tk.StringVar(value="Family Picks")
+        self._requests_badge_btn = ttk.Button(
+            frame,
+            textvariable=self._requests_badge_var,
+            command=self._safe_call(self._open_family_requests_window),
+            width=22,
+        )
+        self._requests_badge_btn.grid(row=0, column=2, sticky="e", pady=(0, 8))
 
         # Buttons grouped by task so the user can scan by intent instead of
         # hunting through a flat 1-21 list. Each tuple is (label, command).
@@ -282,6 +301,95 @@ class GrocerySenseApp(tk.Tk):
                 self.after(0, lambda e=exc: messagebox.showerror("Error", str(e)))
 
         threading.Thread(target=worker, daemon=True).start()
+
+    # ------------------------------------------------------------------
+    # Family picks (member picks → parent review)
+    # ------------------------------------------------------------------
+
+    def _refresh_request_badge(self) -> None:
+        """Update the main-menu badge with the unreviewed family-pick count."""
+        if not self._db_ready.is_set():
+            return
+        try:
+            n = family_requests_service.unreviewed_count()
+        except Exception:
+            return
+        self._requests_badge_var.set(f"🔔 Family Picks ({n})" if n else "Family Picks")
+
+    def _open_family_requests_window(self) -> None:
+        open_family_requests_window(
+            self, log=self._log, on_change=self._refresh_request_badge
+        )
+        self._refresh_request_badge()
+
+    def _open_meal_picker_dialog(self, parent, member_id, member_name, *, on_done=None) -> None:
+        """Let a member pick a meal; its ingredients are added to the list.
+
+        Recipes containing a household allergen are already excluded by
+        family_requests_service.pickable_recipes() (household hard excludes).
+        """
+        names = family_requests_service.pickable_recipes()
+
+        dlg = tk.Toplevel(parent)
+        dlg.title(f"Pick a meal — {member_name}")
+        dlg.geometry("420x460")
+
+        root = ttk.Frame(dlg)
+        root.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        ttk.Label(root, text="What would you like to eat?", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        ttk.Label(root, text="Adds the meal's ingredients to the shared list.", foreground="#555").pack(
+            anchor="w", pady=(0, 8)
+        )
+
+        filter_var = tk.StringVar()
+        ttk.Entry(root, textvariable=filter_var).pack(fill=tk.X, pady=(0, 6))
+
+        list_frame = ttk.Frame(root)
+        list_frame.pack(fill=tk.BOTH, expand=True)
+        listbox = tk.Listbox(list_frame)
+        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=listbox.yview)
+        listbox.configure(yscrollcommand=scrollbar.set)
+        listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        shown: list = []
+
+        def repopulate(*_a) -> None:
+            nonlocal shown
+            q = (filter_var.get() or "").strip().lower()
+            shown = [n for n in names if q in n.lower()] if q else list(names)
+            listbox.delete(0, tk.END)
+            if not shown:
+                listbox.insert(tk.END, "(no matching recipes)")
+                return
+            for n in shown:
+                listbox.insert(tk.END, n)
+
+        filter_var.trace_add("write", repopulate)
+
+        def do_pick() -> None:
+            sel = listbox.curselection()
+            if not sel or not shown:
+                self._log("Pick a meal: select a recipe first.")
+                return
+            idx = int(sel[0])
+            if idx < 0 or idx >= len(shown):
+                return
+            recipe_name = shown[idx]
+            family_requests_service.pick_meal(member_id, recipe_name)
+            self._log(f"Meal picked: {recipe_name} — {member_name}")
+            dlg.destroy()
+            if on_done:
+                on_done()
+
+        listbox.bind("<Double-Button-1>", lambda _e: do_pick())
+
+        btns = ttk.Frame(root)
+        btns.pack(fill=tk.X, pady=(8, 0))
+        ttk.Button(btns, text="Add this meal", command=self._safe_call(do_pick)).pack(side=tk.LEFT)
+        ttk.Button(btns, text="Cancel", command=dlg.destroy).pack(side=tk.RIGHT)
+
+        repopulate()
 
     # ------------------------------------------------------------------
     # Shopping List window
@@ -423,22 +531,43 @@ class GrocerySenseApp(tk.Tk):
             selected_member_name = member_var.get()
             selected_member_id = member_id_by_name.get(selected_member_name)
 
-            self.shopping_list_service.add_single_item(
-                name=name,
-                quantity=quantity,
-                unit=unit,
-                planned_store_id=None,
-                notes=None,
-                added_by=selected_member_name or "tk_ui",
-                added_by_member_id=selected_member_id,
-                item_id=None,
-                auto_map=True,
-            )
+            member = config_store.get_member(selected_member_id) if selected_member_id is not None else None
+            is_secondary = bool(member and member.role != config_store.ROLE_MASTER)
+
+            if is_secondary:
+                # Secondary member → record a "family pick" so the parent is notified.
+                family_requests_service.pick_item(
+                    selected_member_id,
+                    name,
+                    quantity=quantity if quantity is not None else 1.0,
+                    unit=unit,
+                )
+            else:
+                self.shopping_list_service.add_single_item(
+                    name=name,
+                    quantity=quantity,
+                    unit=unit,
+                    planned_store_id=None,
+                    notes=None,
+                    added_by=selected_member_name or "tk_ui",
+                    added_by_member_id=selected_member_id,
+                    item_id=None,
+                    auto_map=True,
+                )
             self._log(f"Added: {name} ({quantity or ''} {unit}) — {selected_member_name or 'unknown'}")
             name_var.set("")
             qty_var.set("")
             name_entry.focus_set()
             refresh()
+            self._refresh_request_badge()
+
+        def on_pick_meal() -> None:
+            selected_member_name = member_var.get()
+            selected_member_id = member_id_by_name.get(selected_member_name)
+            if selected_member_id is None:
+                self._log("Pick a meal: choose who's shopping first.")
+                return
+            self._open_meal_picker_dialog(win, selected_member_id, selected_member_name, on_done=lambda: (refresh(), self._refresh_request_badge()))
 
         def on_toggle_checked() -> None:
             it = get_selected_item()
@@ -463,6 +592,7 @@ class GrocerySenseApp(tk.Tk):
         ttk.Button(add_frame, text="Add", command=self._safe_call(on_add_item), width=10).grid(
             row=0, column=6, padx=8, pady=6
         )
+        ttk.Button(btn_frame, text="🍽 Pick a meal", command=self._safe_call(on_pick_meal)).pack(side=tk.LEFT, padx=(0, 8))
         ttk.Button(btn_frame, text="Refresh", command=self._safe_call(refresh)).pack(side=tk.LEFT, padx=(0, 8))
         ttk.Button(btn_frame, text="Check off / Uncheck", command=self._safe_call(on_toggle_checked)).pack(
             side=tk.LEFT, padx=(0, 8)
