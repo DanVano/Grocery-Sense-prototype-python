@@ -271,6 +271,26 @@ def create_tables(conn: sqlite3.Connection) -> None:
         """
     )
 
+    # --- member_requests ("family picks": a member picks a meal/item, parent reviews) ---
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS member_requests (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            member_id    INTEGER,                 -- household member id (lives in config JSON, not a DB FK)
+            member_name  TEXT,                    -- snapshot for display
+            kind         TEXT NOT NULL,           -- 'meal' | 'item'
+            label        TEXT NOT NULL,           -- recipe name or item text
+            item_row_ids TEXT,                    -- JSON list of shopping_list.id this pick created
+            created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+            reviewed     INTEGER NOT NULL DEFAULT 0
+        );
+        """
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_member_requests_unreviewed "
+        "ON member_requests(reviewed, id);"
+    )
+
     # --- user_profile ---
     cur.execute(
         """
