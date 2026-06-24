@@ -704,11 +704,14 @@ def ingest_analyzed_receipt_into_db(
     else:
         # File mtime fallback gives a stable per-file date so re-ingest of the
         # same PDF yields the same signature even when Azure can't extract one.
+        # Use LOCAL date, not UTC: purchase_date is a calendar day on the
+        # receipt (the Azure-extracted path above is a bare local date), so a
+        # UTC stamp future-dates evening receipts for UTC-behind timezones.
         try:
             mtime = Path(file_path).stat().st_mtime
-            purchase_date = datetime.fromtimestamp(mtime, tz=timezone.utc).strftime("%Y-%m-%d")
+            purchase_date = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
         except Exception:
-            purchase_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            purchase_date = datetime.now().strftime("%Y-%m-%d")
         # Disclose the inferred date: it feeds price-history windows, so a wrong
         # date skews "usual price" / 6-month-low math. Don't pretend it's real.
         import warnings
