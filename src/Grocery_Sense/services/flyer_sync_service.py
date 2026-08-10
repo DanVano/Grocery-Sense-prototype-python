@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, List, Optional
 
+from Grocery_Sense.config.config_store import atomic_write_json
 from Grocery_Sense.data.repositories.flyers_repo import FlyersRepo
 from Grocery_Sense.data.repositories.stores_repo import list_stores
 from Grocery_Sense.integrations.flipp_client import FlippClient
@@ -51,15 +52,9 @@ def _read_last_sync_utc() -> Optional[datetime.datetime]:
 
 
 def _write_last_sync_utc(dt: datetime.datetime) -> None:
-    _META_FILE.parent.mkdir(parents=True, exist_ok=True)
     # Atomic write so a crash mid-flush doesn't leave an empty meta file
     # (which would make `needs_sync()` fire every launch).
-    tmp = _META_FILE.with_suffix(_META_FILE.suffix + ".tmp")
-    tmp.write_text(
-        json.dumps({"last_sync_utc": dt.isoformat(timespec="seconds")}),
-        encoding="utf-8",
-    )
-    tmp.replace(_META_FILE)
+    atomic_write_json(_META_FILE, {"last_sync_utc": dt.isoformat(timespec="seconds")})
 
 
 def needs_sync() -> bool:

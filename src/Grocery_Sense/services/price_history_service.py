@@ -22,12 +22,14 @@ from collections import Counter
 from Grocery_Sense.data.repositories.items_repo import (
     get_item_by_name,
     get_item_by_id,
+    get_items_by_names,
     create_item,
 )
 from Grocery_Sense.data.repositories.prices_repo import (
     add_price_point,
     get_most_recent_price,
     get_price_stats_for_item,
+    get_price_stats_batch,
     get_prices_for_item,
 )
 from Grocery_Sense.domain.models import Item, PricePoint
@@ -43,6 +45,10 @@ class PriceHistoryService:
       - Compute per-item statistics (avg/min/max over a window).
       - Classify a candidate price as "great / good / typical / expensive".
     """
+
+    def __init__(self) -> None:
+        from Grocery_Sense.services.unit_normalization_service import UnitNormalizationService
+        UnitNormalizationService().ensure_schema()
 
     # ---------- Item helpers ----------
 
@@ -232,6 +238,65 @@ class PriceHistoryService:
             "max_unit_price": max_price,
             "sample_count": count,
         }
+
+    def get_baseline_price(
+        self,
+        item_name: str,
+        *,
+        window_days: int = 90,
+    ) -> Optional[float]:
+        """
+        Return a baseline (average) unit price for an item over the trailing
+        window, or None if there is no usable history.
+
+        This is the hook MealSuggestionService uses to judge whether a current
+        flyer deal is cheaper than the household's usual price.
+        """
+        item = get_item_by_name(item_name.strip())
+        if not item:
+            return None
+        stats = get_price_stats_for_item(item_id=item.id, since_days=window_days)
+        if stats.count == 0 or stats.avg_price is None:
+            return None
+        return float(stats.avg_price)
+
+    def get_baseline_prices(
+        self,
+        item_names: List[str],
+        *,
+        window_days: int = 90,
+    ) -> Dict[str, Optional[float]]:
+        """
+        Batched form of get_baseline_price: resolve many ingredient names to a
+        baseline (average) unit price in ~2 queries total instead of 2 per name.
+
+        Returns {trimmed_input_name: avg_price_or_None}. Lookup is
+        case-insensitive; None-when-no-history parity matches get_baseline_price.
+        """
+        # de-dupe by lowercased key, remembering the first trimmed input form
+        key_for_lower: Dict[str, str] = {}
+        for n in item_names:
+            t = (n or "").strip()
+            if t:
+                key_for_lower.setdefault(t.lower(), t)
+        if not key_for_lower:
+            return {}
+
+        items_by_name = get_items_by_names(list(key_for_lower.keys()))  # 1 query
+        stats_map = get_price_stats_batch(
+            [it.id for it in items_by_name.values()], since_days=window_days
+        )  # 1 query
+
+        out: Dict[str, Optional[float]] = {}
+        for low, trimmed in key_for_lower.items():
+            baseline: Optional[float] = None
+            item = items_by_name.get(low)
+            if item is not None:
+                st = stats_map.get(item.id)
+                if st and st.count and st.avg_price is not None:
+                    baseline = float(st.avg_price)
+            out[trimmed] = baseline
+        return out
 
     def stats_for_item_by_store(
         self,

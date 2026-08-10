@@ -21,7 +21,7 @@ import pytest
 
 from Grocery_Sense.data.repositories.items_repo import create_item
 from Grocery_Sense.data.repositories.prices_repo import add_price_point
-from Grocery_Sense.data.repositories.stores_repo import create_store
+from Grocery_Sense.data.repositories.stores_repo import create_store, set_store_active
 from Grocery_Sense.services.planning_service import PlanningService
 from Grocery_Sense.services.shopping_list_service import ShoppingListService
 
@@ -292,3 +292,28 @@ class TestNullPriceTolerance:
         plan = svc.build_plan_for_active_list()
         assert isinstance(plan["summary"], str)
         assert plan["summary"]  # non-empty
+
+
+# ---------------------------------------------------------------------------
+# Archived store guard
+# ---------------------------------------------------------------------------
+
+
+class TestArchivedStoreGuard:
+    def test_archived_store_excluded_from_plan(self, svc, sl_svc):
+        active = create_store(name="Active Mart", is_favorite=True, priority=10)
+        archived = create_store(name="Archived Mart", is_favorite=True, priority=10)
+
+        item_id = _seed_item_with_prices(
+            "eggs",
+            prices={active.id: [5.00], archived.id: [2.00]},
+        )
+        sl_svc.add_single_item(name="eggs", item_id=item_id)
+
+        set_store_active(archived.id, False)
+
+        plan = svc.build_plan_for_active_list(max_stores=2)
+
+        # Archived store must not appear, even though it's cheaper.
+        assert archived.id not in plan["stores"]
+        assert active.id in plan["stores"]

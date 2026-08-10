@@ -19,7 +19,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from Grocery_Sense.config.config_store import get_user_profile
+from Grocery_Sense.services.preferences_service import get_meal_profile
 from Grocery_Sense.recipes.recipe_engine import (
     RecipeEngine,
     load_all_recipes,
@@ -43,6 +43,9 @@ class SuggestedMeal:
     variety_score: float
     reasons: list[str]
     explanation: str | None = None
+    cost_total: float | None = None         # sum of baseline prices for priced ingredients
+    cost_per_serving: float | None = None   # cost_total / servings
+    cost_known_ratio: float = 0.0           # fraction of ingredients with a known price
 
 
 # ---------------------------------------------------------------------------
@@ -58,6 +61,17 @@ def _lower_list(values: Optional[Iterable[str]]) -> List[str]:
 
 def _extract_core_ingredients(recipe: Dict[str, Any]) -> List[str]:
     ings = recipe.get("ingredients") or []
+    if isinstance(ings, str):
+        name = recipe.get("id") or recipe.get("name") or "?"
+        raise TypeError(
+            f"Recipe {name!r} has a string 'ingredients' field; expected a list."
+        )
+    if not isinstance(ings, (list, tuple)):
+        name = recipe.get("id") or recipe.get("name") or "?"
+        raise TypeError(
+            f"Recipe {name!r} has a non-list 'ingredients' field of type "
+            f"{type(ings).__name__}."
+        )
     return [str(i).strip() for i in ings if str(i).strip()]
 
 
@@ -83,11 +97,14 @@ def _recipe_has_disallowed_ingredients(recipe: Dict[str, Any], profile: Dict[str
         if _word_in_text(term, ingredients_text):
             return True
 
-    # Map some restrictions to ingredient bans
-    if "no_pork" in restrictions and _word_in_text("pork", ingredients_text):
-        return True
-    if "no_beef" in restrictions and _word_in_text("beef", ingredients_text):
-        return True
+    # Map "no_<ingredient>" restrictions to hard ingredient bans (e.g. "no_pork",
+    # "no_chicken"). "no_meat"/"no_fish" are umbrella diet flags, not single-
+    # ingredient bans, so they are excluded here.
+    for r in restrictions:
+        if r.startswith("no_"):
+            term = r[3:].strip()
+            if term and term not in ("meat", "fish") and _word_in_text(term, ingredients_text):
+                return True
 
     return False
 
@@ -179,10 +196,9 @@ def _compute_price_contribution_for_ingredient(
 
 def _compute_price_score_for_recipe(
     recipe: Dict[str, Any],
-    price_history_service: Any,
+    baseline_map: Dict[str, Optional[float]],
     deals_by_ingredient: Dict[str, List[Deal]],
     reasons_out: List[str],
-    baseline_window_days: int = 90,
 ) -> float:
     ingredients = _extract_core_ingredients(recipe)
     if not ingredients:
@@ -193,15 +209,9 @@ def _compute_price_score_for_recipe(
     for ing in ingredients:
         ing_low = ing.lower()
 
-        baseline = None
-        if price_history_service is not None:
-            try:
-                baseline = price_history_service.get_baseline_price(
-                    ing_low,
-                    window_days=baseline_window_days,
-                )
-            except AttributeError:
-                baseline = None
+        # Baselines are precomputed once per run (see suggest_meals_for_week) so
+        # we don't issue an item lookup per ingredient per recipe.
+        baseline = baseline_map.get(ing_low)
 
         deals = deals_by_ingredient.get(ing_low, [])
         contrib = _compute_price_contribution_for_ingredient(
@@ -240,6 +250,38 @@ def _compute_variety_score(
     return 0.0
 
 
+def _compute_cost_estimate(
+    recipe: Dict[str, Any],
+    baseline_map: Dict[str, Optional[float]],
+) -> Tuple[Optional[float], Optional[float], float]:
+    """
+    Returns (cost_total, cost_per_serving, known_ratio).
+
+    Estimates cost as sum of baseline_map prices for each ingredient (1 unit each —
+    ponytail: recipes store string ingredients, not qty+unit; this is an estimate).
+    known_ratio < 1 means the displayed cost is partial — callers must disclose this.
+    """
+    ingredients = _extract_core_ingredients(recipe)
+    if not ingredients:
+        return None, None, 0.0
+
+    servings = recipe.get("servings")
+    total = 0.0
+    known = 0
+    for ing in ingredients:
+        price = baseline_map.get(ing.lower())
+        if price is not None:
+            total += price
+            known += 1
+
+    ratio = known / len(ingredients)
+    if known == 0:
+        return None, None, 0.0
+
+    per_serving = (total / int(servings)) if servings and int(servings) > 0 else None
+    return total, per_serving, ratio
+
+
 def _collect_all_ingredients(recipes: Sequence[Dict[str, Any]]) -> List[str]:
     seen = set()
     result: List[str] = []
@@ -267,7 +309,7 @@ def _fetch_deals_for_ingredients(
     """
     import datetime as _dt
     from collections import defaultdict
-    from Grocery_Sense.data.connection import get_connection
+    from Grocery_Sense.data.connection import connection_scope
 
     if not ingredients:
         return {}
@@ -275,7 +317,7 @@ def _fetch_deals_for_ingredients(
     today = _dt.date.today().isoformat()
 
     try:
-        with get_connection() as conn:
+        with connection_scope() as conn:
             rows = conn.execute(
                 """
                 SELECT
@@ -288,8 +330,10 @@ def _fetch_deals_for_ingredients(
                 JOIN flyer_batches b ON b.id = d.flyer_id
                 LEFT JOIN stores s ON s.id = d.store_id
                 WHERE b.status = 'active'
-                  AND b.valid_from <= ?
-                  AND b.valid_to   >= ?
+                  AND b.valid_from IS NOT NULL AND b.valid_to IS NOT NULL
+                  AND TRIM(b.valid_from) <> '' AND TRIM(b.valid_to) <> ''
+                  AND date(b.valid_from) <= date(?)
+                  AND date(b.valid_to)   >= date(?)
                 LIMIT 5000
                 """,
                 (today, today),
@@ -365,7 +409,8 @@ class MealSuggestionService:
         High-level entrypoint.
 
         profile:
-            If None, uses config_store.get_user_profile().
+            If None, uses preferences_service.get_meal_profile() (household-wide:
+            every member's allergy is honoured, soft excludes don't hard-ban).
 
         target_ingredients:
             - If provided, we first filter recipes using
@@ -379,7 +424,7 @@ class MealSuggestionService:
             Optional set/list of recipe IDs cooked recently; helps encourage variety.
         """
         if profile is None:
-            profile = get_user_profile()
+            profile = get_meal_profile()
 
         # 1) Get candidate recipes
         if target_ingredients:
@@ -405,6 +450,18 @@ class MealSuggestionService:
         all_ingredients = _collect_all_ingredients(filtered)
         deals_by_ingredient = _fetch_deals_for_ingredients(all_ingredients)
 
+        # 2b) Precompute baseline (usual) prices ONCE for every ingredient, so the
+        # per-recipe scoring below is a dict lookup instead of an item+stats query
+        # per (recipe, ingredient).
+        baseline_map: Dict[str, Optional[float]] = {}
+        if self.price_history_service is not None:
+            try:
+                baseline_map = self.price_history_service.get_baseline_prices(
+                    list(all_ingredients), window_days=90
+                )
+            except Exception:
+                baseline_map = {}
+
         # 3) Score each recipe
         suggestions: List[SuggestedMeal] = []
 
@@ -413,12 +470,13 @@ class MealSuggestionService:
 
             price_score = _compute_price_score_for_recipe(
                 r,
-                self.price_history_service,
+                baseline_map,
                 deals_by_ingredient,
                 reasons,
             )
             preference_score = _compute_preference_score(r, profile)
             variety_score = _compute_variety_score(r, recently_used_recipe_ids)
+            cost_total, cost_per_serving, cost_known_ratio = _compute_cost_estimate(r, baseline_map)
 
             # Choice C weighting:
             #  - price_score       -> 0.5
@@ -441,6 +499,9 @@ class MealSuggestionService:
                     preference_score=preference_score,
                     variety_score=variety_score,
                     reasons=reasons,
+                    cost_total=cost_total,
+                    cost_per_serving=cost_per_serving,
+                    cost_known_ratio=cost_known_ratio,
                 )
             )
 
@@ -509,12 +570,28 @@ def format_meal_explanation(
 def explain_suggested_meal(meal: "SuggestedMeal") -> str:
     """Wrapper that unpacks a SuggestedMeal into format_meal_explanation."""
     recipe_name = meal.recipe.get("name", "Unknown recipe") if meal.recipe else "Unknown recipe"
-    return format_meal_explanation(
+    lines = [format_meal_explanation(
         recipe_name=recipe_name,
         preference_score=meal.preference_score,
         deal_score=meal.deal_score,
         price_score=meal.price_score,
         variety_score=meal.variety_score,
         reasons=meal.reasons,
-    )
+    )]
+
+    # Per-serving cost estimate
+    if meal.cost_per_serving is not None:
+        pct = int(meal.cost_known_ratio * 100)
+        servings = meal.recipe.get("servings") or "?"
+        lines.append(
+            f"\nEst. cost: ≈ ${meal.cost_per_serving:.2f}/serving"
+            f" (${meal.cost_total:.2f} total, {servings} servings)"
+            f" — {pct}% of ingredients priced from your receipt history."
+        )
+        if meal.cost_known_ratio < 1.0:
+            lines.append("(Partial estimate — some ingredients have no price history.)")
+    else:
+        lines.append("\nEst. cost: unknown — no receipt history for these ingredients.")
+
+    return "\n".join(lines)
 

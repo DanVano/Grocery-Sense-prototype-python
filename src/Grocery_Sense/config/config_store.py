@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import copy
 import json
+import logging
+import os
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
@@ -112,6 +115,10 @@ class UserConfig:
 
     store_priority: Dict[str, int] = field(default_factory=dict)
     favorite_store_ids: List[int] = field(default_factory=list)
+
+    monthly_budget: Optional[float] = None
+    # ponytail: manual entry, no geocoding. Two round trips assumed for second store.
+    gas_cost_per_km: float = 0.18  # $/km operating cost default (~CAN average)
 
     household: Household = field(default_factory=Household)
 
@@ -335,25 +342,39 @@ def _read_raw_config() -> Dict[str, Any]:
     try:
         with _CONFIG_FILE.open("r", encoding="utf-8") as f:
             data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+    except json.JSONDecodeError as e:
+        # Fail loud: a corrupt user_config.json must NOT be silently reset to
+        # defaults — that would wipe the user's household members and allergies
+        # (a safety-critical loss). Surface a clear, actionable error instead.
+        raise RuntimeError(
+            f"user_config.json is corrupt and cannot be parsed ({e}). "
+            f"Refusing to overwrite it with defaults - your household and allergy "
+            f"settings would be lost. Fix or restore the file at {_CONFIG_FILE}."
+        ) from e
+    return data if isinstance(data, dict) else {}
+
+
+def atomic_write_json(path: Path, data: Any, **dump_kwargs: Any) -> None:
+    """Write *data* as JSON to *path* via temp-file + fsync + rename, so a crash
+    mid-write never leaves a truncated/partial file. Extra kwargs pass through to
+    json.dump (indent, sort_keys, ensure_ascii, ...)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        json.dump(data, f, **dump_kwargs)
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except Exception:
+            pass
+    tmp.replace(path)
 
 
 def _write_raw_config(data: Dict[str, Any]) -> None:
-    # Atomic write via temp-file + rename so a crash mid-write doesn't leave
-    # an empty/partial user_config.json (which would silently reset the user's
-    # household / preferences on next launch).
-    import os as _os
-    tmp = _CONFIG_FILE.with_suffix(_CONFIG_FILE.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, sort_keys=True)
-        f.flush()
-        try:
-            _os.fsync(f.fileno())
-        except Exception:
-            pass
-    tmp.replace(_CONFIG_FILE)
+    # Atomic write so a crash mid-write doesn't leave an empty/partial
+    # user_config.json (which would silently reset the user's household /
+    # preferences on next launch).
+    atomic_write_json(_CONFIG_FILE, data, indent=2, sort_keys=True)
 
 
 def _member_from_raw(raw: Dict[str, Any]) -> HouseholdMember:
@@ -388,6 +409,22 @@ def _household_from_raw(raw: Dict[str, Any]) -> Household:
 
 
 def _from_raw_config(raw: Dict[str, Any]) -> UserConfig:
+    raw_budget = raw.get("monthly_budget")
+    try:
+        monthly_budget: Optional[float] = float(raw_budget) if raw_budget is not None else None
+        if monthly_budget is not None and monthly_budget <= 0:
+            monthly_budget = None
+    except (TypeError, ValueError):
+        monthly_budget = None
+
+    raw_gas = raw.get("gas_cost_per_km")
+    try:
+        gas_cost_per_km: float = float(raw_gas) if raw_gas is not None else 0.18
+        if gas_cost_per_km <= 0:
+            gas_cost_per_km = 0.18
+    except (TypeError, ValueError):
+        gas_cost_per_km = 0.18
+
     cfg = UserConfig(
         profile_version=int(raw.get("profile_version", raw.get("version", PROFILE_VERSION)) or PROFILE_VERSION),
         postal_code=str(raw.get("postal_code", "") or ""),
@@ -395,6 +432,8 @@ def _from_raw_config(raw: Dict[str, Any]) -> UserConfig:
         country=str(raw.get("country", "") or "CA"),
         store_priority=raw.get("store_priority", {}) or {},
         favorite_store_ids=raw.get("favorite_store_ids", []) or [],
+        monthly_budget=monthly_budget,
+        gas_cost_per_km=gas_cost_per_km,
         household=_household_from_raw(raw.get("household", {}) or {}),
     )
 
@@ -445,7 +484,13 @@ def load_config() -> UserConfig:
             raw = _read_raw_config()
             _config_cache = _from_raw_config(raw)
             _config_mtime_key = key
-        return _config_cache
+        # Return an independent snapshot, not the shared cached object. Readers
+        # run on daemon worker threads (meal suggestion, flyer sync, price-drop
+        # alerts) while the UI mutates the household on the main thread; handing
+        # out the live object would let a reader iterate a list mid-mutation
+        # ("list changed size during iteration"). The household is tiny, so the
+        # deepcopy cost is negligible. Mutators must read-modify-save_config().
+        return copy.deepcopy(_config_cache)
 
 
 def save_config(cfg: UserConfig) -> None:
@@ -668,6 +713,12 @@ def _load_cache() -> Dict[str, Any]:
             try:
                 _deals_cache = json.loads(_CACHE_FILE.read_text(encoding="utf-8")) or {}
             except Exception:
+                # The deals cache is regenerable, so resetting is acceptable —
+                # but disclose it (don't silently degrade).
+                logging.getLogger(__name__).warning(
+                    "deals_cache.json was corrupt; rebuilding an empty cache (%s).",
+                    _CACHE_FILE,
+                )
                 _deals_cache = {}
         else:
             _deals_cache = {}
@@ -678,16 +729,7 @@ def _load_cache() -> Dict[str, Any]:
 def _save_cache(data: Dict[str, Any]) -> None:
     """Atomic write so a crash mid-flush doesn't truncate the cache."""
     global _deals_cache, _deals_cache_key
-    import os as _os
-    tmp = _CACHE_FILE.with_suffix(_CACHE_FILE.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-        f.flush()
-        try:
-            _os.fsync(f.fileno())
-        except Exception:
-            pass
-    tmp.replace(_CACHE_FILE)
+    atomic_write_json(_CACHE_FILE, data, ensure_ascii=False, indent=2)
     with _deals_cache_lock:
         _deals_cache = data
         _deals_cache_key = _deals_stat_key()
@@ -711,12 +753,29 @@ def cache_get(key: str, *, max_age_days: int = 7) -> Optional[Any]:
     return entry.get("value")
 
 
-def cache_set(key: str, value: Any) -> None:
-    """Store *value* in the cache under *key*, tagged with the current timestamp."""
-    import time
-    cache = _load_cache()
-    cache[key] = {"stored_at": time.time(), "value": value}
-    _save_cache(cache)
+def _prune_expired_locked(cache: dict, *, max_age_days: int, now: float) -> None:
+    stale = [
+        k for k, v in cache.items()
+        if not isinstance(v, dict)
+        or (now - v.get("stored_at", 0)) < 0
+        or (now - v.get("stored_at", 0)) / 86400.0 > max_age_days
+    ]
+    for k in stale:
+        del cache[k]
+
+
+def cache_set(key: str, value: Any, *, max_age_days: int = 7) -> None:
+    """Store *value* in the cache under *key*, tagged with the current timestamp.
+
+    Expired entries (older than max_age_days) are pruned on every write.
+    """
+    import time as _time
+    with _deals_cache_lock:
+        now = _time.time()
+        cache = dict(_load_cache())
+        cache[key] = {"stored_at": now, "value": value}
+        _prune_expired_locked(cache, max_age_days=max_age_days, now=now)
+        _save_cache(cache)
 
 
 def reset_secondary_member_to_household_baseline(member_id: int) -> bool:
@@ -802,6 +861,12 @@ def get_user_profile() -> Dict[str, Any]:
             restrictions.append("no_meat")
         if not raw.get("eats_fish", True):
             restrictions.append("no_fish")
+        # Master protein exclusions are HARD household-wide (see preferences_service),
+        # so surface them as no_<protein> tokens the meal hard-filter honours.
+        for p in raw.get("excluded_proteins", []) or []:
+            tok = str(p).strip().lower()
+            if tok:
+                restrictions.append(f"no_{tok}")
         raw["restrictions"] = restrictions
     if "prefer_meats" not in raw:
         weights = raw.get("preferred_protein_weights", {})

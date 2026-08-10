@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import re
+import threading
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
-from Grocery_Sense.data.connection import _TEST_DB_PATH, get_connection, get_db_path
+from Grocery_Sense.data.connection import _TEST_DB_PATH, connection_scope, get_connection, get_db_path
 
 
 # Schema-ready cache keyed by resolved DB path, so swapping DBs (e.g. pytest
 # fixtures) automatically invalidates without each caller having to reset.
 _SCHEMA_READY: set = set()
+# Serialises the check-then-ALTER so two background threads can't both run the
+# column-add and raise "duplicate column name".
+_SCHEMA_LOCK = threading.Lock()
 
 
 def _current_db_key() -> str:
@@ -87,25 +91,28 @@ class UnitNormalizationService:
         key = _current_db_key()
         if key in _SCHEMA_READY:
             return
-        self._ensure_items_default_unit_column()
-        self._ensure_prices_norm_columns()
-        _SCHEMA_READY.add(key)
+        with _SCHEMA_LOCK:
+            if key in _SCHEMA_READY:  # re-check inside the lock
+                return
+            self._ensure_items_default_unit_column()
+            self._ensure_prices_norm_columns()
+            _SCHEMA_READY.add(key)
 
     def _column_exists(self, table: str, col: str) -> bool:
-        with get_connection() as conn:
+        with connection_scope() as conn:
             rows = conn.execute(f"PRAGMA table_info({table});").fetchall()
         return any((r[1] == col) for r in rows)  # r[1] = column name
 
     def _ensure_items_default_unit_column(self) -> None:
         if self._column_exists("items", "default_unit"):
             return
-        with get_connection() as conn:
+        with connection_scope() as conn:
             conn.execute("ALTER TABLE items ADD COLUMN default_unit TEXT;")
             conn.commit()
 
     def _ensure_prices_norm_columns(self) -> None:
         # Add norm columns if missing
-        with get_connection() as conn:
+        with connection_scope() as conn:
             # We must check each one; SQLite doesn't support ALTER COLUMN IF NOT EXISTS
             rows = conn.execute("PRAGMA table_info(prices);").fetchall()
             existing = {r[1] for r in rows}
@@ -125,7 +132,7 @@ class UnitNormalizationService:
 
     def get_item_default_unit(self, item_id: int) -> Optional[str]:
         self.ensure_schema()
-        with get_connection() as conn:
+        with connection_scope() as conn:
             row = conn.execute(
                 "SELECT default_unit FROM items WHERE id = ?;",
                 (int(item_id),),
@@ -152,7 +159,7 @@ class UnitNormalizationService:
         if cur:
             return
 
-        with get_connection() as conn:
+        with connection_scope() as conn:
             conn.execute(
                 "UPDATE items SET default_unit = ? WHERE id = ?;",
                 (observed_unit, int(item_id)),

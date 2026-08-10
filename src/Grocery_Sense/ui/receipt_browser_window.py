@@ -16,6 +16,7 @@ from Grocery_Sense.data.repositories.receipts_repo import (
     restore_receipt_from_backup,
     list_deleted_backups,
 )
+from Grocery_Sense.data.repositories import stores_repo
 
 
 def _fmt_money(v: Any) -> str:
@@ -58,7 +59,13 @@ class ReceiptBrowserWindow(tk.Toplevel):
         self.limit_var = tk.IntVar(value=50)
         self.last_backup_id: Optional[int] = None
 
+        self.store_var = tk.StringVar(value="All stores")
+        self.since_var = tk.StringVar(value="")
+        self.until_var = tk.StringVar(value="")
+        self._store_id_by_label: Dict[str, Optional[int]] = {"All stores": None}
+
         self._build_ui()
+        self._load_store_filter()
         self.refresh_receipts()
 
     # ------------------------------------------------------------------ UI
@@ -75,6 +82,22 @@ class ReceiptBrowserWindow(tk.Toplevel):
 
         ttk.Button(top, text="Refresh", command=self.refresh_receipts).pack(side=tk.LEFT, padx=(0, 8))
         ttk.Button(top, text="Undo Last Delete", command=self.undo_last_delete).pack(side=tk.LEFT)
+
+        # --- filter row
+        filt = ttk.Frame(self, padding=(10, 0))
+        filt.pack(fill=tk.X)
+        ttk.Label(filt, text="Store").pack(side=tk.LEFT, padx=(0, 6))
+        self.store_combo = ttk.Combobox(
+            filt, textvariable=self.store_var, state="readonly", width=24, values=["All stores"]
+        )
+        self.store_combo.pack(side=tk.LEFT)
+        self.store_combo.bind("<<ComboboxSelected>>", lambda _e: self.refresh_receipts())
+        ttk.Label(filt, text="From (YYYY-MM-DD)").pack(side=tk.LEFT, padx=(16, 6))
+        ttk.Entry(filt, textvariable=self.since_var, width=12).pack(side=tk.LEFT)
+        ttk.Label(filt, text="To").pack(side=tk.LEFT, padx=(10, 6))
+        ttk.Entry(filt, textvariable=self.until_var, width=12).pack(side=tk.LEFT)
+        ttk.Button(filt, text="Apply filter", command=self.refresh_receipts).pack(side=tk.LEFT, padx=(10, 0))
+        ttk.Button(filt, text="Clear", command=self._clear_filter).pack(side=tk.LEFT, padx=(6, 0))
 
         # Split layout: top list + bottom details
         main = ttk.PanedWindow(self, orient=tk.VERTICAL)
@@ -169,15 +192,36 @@ class ReceiptBrowserWindow(tk.Toplevel):
 
     # --------------------------------------------------------------- Actions
 
+    def _load_store_filter(self) -> None:
+        try:
+            stores = stores_repo.list_stores(order_by_priority=False)
+        except Exception:
+            stores = []
+        labels = ["All stores"]
+        self._store_id_by_label = {"All stores": None}
+        for s in stores:
+            labels.append(s.name)
+            self._store_id_by_label[s.name] = s.id
+        self.store_combo["values"] = labels
+
+    def _clear_filter(self) -> None:
+        self.store_var.set("All stores")
+        self.since_var.set("")
+        self.until_var.set("")
+        self.refresh_receipts()
+
     def refresh_receipts(self) -> None:
         self.receipts_tree.delete(*self.receipts_tree.get_children())
         self.items_tree.delete(*self.items_tree.get_children())
         self.detail_var.set("Select a receipt to view details.")
 
         limit = int(self.limit_var.get() or 50)
+        store_id = self._store_id_by_label.get(self.store_var.get())
+        since = (self.since_var.get() or "").strip() or None
+        until = (self.until_var.get() or "").strip() or None
 
         try:
-            receipts = list_recent_receipts(limit=limit)
+            receipts = list_recent_receipts(limit=limit, store_id=store_id, since=since, until=until)
         except Exception as e:
             messagebox.showerror("Error", str(e))
             return

@@ -20,35 +20,64 @@ Main menu:
 
 from __future__ import annotations
 
+import logging
+import logging.handlers
 import threading
 import traceback
 import tkinter as tk
+from pathlib import Path
 from tkinter import ttk, messagebox
 from tkinter.scrolledtext import ScrolledText
 
 from Grocery_Sense.data.schema import initialize_database
+from Grocery_Sense.config import config_store
 
 from Grocery_Sense.services.shopping_list_service import ShoppingListService
 from Grocery_Sense.services.meal_suggestion_service import MealSuggestionService, explain_suggested_meal
+from Grocery_Sense.services.price_history_service import PriceHistoryService
 from Grocery_Sense.services.flyer_sync_scheduler import FlyerSyncScheduler
 
 from Grocery_Sense.services.weekly_planner_service import (
     WeeklyPlannerService,
     summarize_weekly_plan,
 )
-from Grocery_Sense.services.planning_service import PlanningService
 from Grocery_Sense.services.demo_seed_service import seed_demo_data
+
+from Grocery_Sense.services import family_requests_service
 
 from Grocery_Sense.ui.basket_optimizer_window import open_basket_optimizer_window
 from Grocery_Sense.ui.deal_feed_window import open_deal_feed_window
+from Grocery_Sense.ui.family_requests_window import open_family_requests_window
 from Grocery_Sense.ui.flyer_import_window import open_flyer_import_window
 from Grocery_Sense.ui.item_manager_window import open_item_manager_window
+from Grocery_Sense.ui.list_audit_window import open_list_audit_window
 from Grocery_Sense.ui.preference_window import open_preferences_window
 from Grocery_Sense.ui.price_history_window import open_price_history_window
 from Grocery_Sense.ui.receipt_import_window import open_receipt_import_window
 from Grocery_Sense.ui.receipt_browser_window import open_receipt_browser_window
 from Grocery_Sense.ui.store_plan_window import open_store_plan_window
+from Grocery_Sense.ui.budget_window import open_budget_window
+from Grocery_Sense.ui.store_settings_window import open_store_settings_window
+from Grocery_Sense.ui.price_drop_alerts_window import open_price_drop_alerts_window
+from Grocery_Sense.ui.stores_management_window import open_stores_management_window
 
+
+
+def _setup_file_logger() -> logging.Logger:
+    from Grocery_Sense.data.connection import get_db_path
+    log_path = get_db_path().parent / "grocery_sense.log"
+    logger = logging.getLogger("grocery_sense")
+    if not logger.handlers:
+        handler = logging.handlers.RotatingFileHandler(
+            log_path, maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8"
+        )
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+    return logger
+
+
+_file_logger = _setup_file_logger()
 
 
 class GrocerySenseApp(tk.Tk):
@@ -57,16 +86,16 @@ class GrocerySenseApp(tk.Tk):
         self.title("Grocery Sense - Prototype")
         self.geometry("980x700")
 
-        initialize_database()
+        self._db_ready = threading.Event()
 
         self.shopping_list_service = ShoppingListService()
-        self.meal_suggestion_service = MealSuggestionService(price_history_service=None)
+        self.meal_suggestion_service = MealSuggestionService(
+            price_history_service=PriceHistoryService()
+        )
         self.weekly_planner_service = WeeklyPlannerService(
             meal_suggestion_service=self.meal_suggestion_service,
             shopping_list_service=self.shopping_list_service,
         )
-        self.planning_service = PlanningService()
-
 
         self._build_main_menu()
         self._build_log_panel()
@@ -76,11 +105,14 @@ class GrocerySenseApp(tk.Tk):
         # mainloop is pumping, so any `after(0, ...)` callbacks dispatched from
         # workers don't fire against an unrealized window.
         self._flyer_scheduler = FlyerSyncScheduler(on_sync_complete=self._on_flyer_sync_done)
-        self.after(500, self._flyer_scheduler.start)
-        self.after(1500, lambda: threading.Thread(target=self._check_price_drop_alerts, daemon=True).start())
+        self.after(200, self._init_db_async)
 
         # Cancel background timers cleanly on window close.
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # Refresh the family-picks badge whenever the main window regains focus
+        # (e.g. after closing the shopping-list window where picks are made).
+        self.bind("<FocusIn>", lambda _e: self._refresh_request_badge())
 
     def _on_close(self) -> None:
         try:
@@ -91,6 +123,27 @@ class GrocerySenseApp(tk.Tk):
             pass
         self.destroy()
 
+    def _init_db_async(self) -> None:
+        """Initialize/migrate the DB off the main thread; then start the alert check."""
+        self._log("Initializing database schema…")
+
+        def worker() -> None:
+            try:
+                initialize_database()
+                self._db_ready.set()
+                self.after(0, lambda: self._log("Database ready."))
+                self.after(0, self._refresh_request_badge)
+                self.after(0, self._flyer_scheduler.start)  # safe: DB is ready
+                threading.Thread(
+                    target=self._check_price_drop_alerts, daemon=True
+                ).start()
+            except Exception as exc:
+                self.after(
+                    0, lambda e=exc: messagebox.showerror("Error", str(e))
+                )
+
+        threading.Thread(target=worker, daemon=True).start()
+
     # ------------------------------------------------------------------
     # Base UI helpers
     # ------------------------------------------------------------------
@@ -100,138 +153,93 @@ class GrocerySenseApp(tk.Tk):
         frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
 
         ttk.Label(frame, text="Grocery Sense - Main Menu", font=("Segoe UI", 14, "bold")).grid(
-            row=0, column=0, columnspan=2, sticky="w", pady=(0, 10)
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 8)
         )
 
-        row = 1
-
-        ttk.Button(
+        # Family-picks notification badge (parent review queue). Text is bound to
+        # _requests_badge_var and refreshed by _refresh_request_badge().
+        self._requests_badge_var = tk.StringVar(value="Family Picks")
+        self._requests_badge_btn = ttk.Button(
             frame,
-            text="1) Initialize / Verify Database",
-            command=self._safe_call(self._handle_init_db),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
+            textvariable=self._requests_badge_var,
+            command=self._safe_call(self._open_family_requests_window),
+            width=22,
+        )
+        self._requests_badge_btn.grid(row=0, column=2, sticky="e", pady=(0, 8))
 
-        ttk.Button(
-            frame,
-            text="2) Shopping List",
-            command=self._safe_call(self._open_shopping_list_window),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
+        # Buttons grouped by task so the user can scan by intent instead of
+        # hunting through a flat 1-21 list. Each tuple is (label, command).
+        sections = [
+            ("Shop", [
+                ("Shopping List", self._open_shopping_list_window),
+                ("List Price Audit", lambda: open_list_audit_window(self, log=self._log)),
+                ("Deal Feed", lambda: open_deal_feed_window(self, log=self._log)),
+                ("Basket Optimizer", lambda: open_basket_optimizer_window(self, log=self._log)),
+                ("Store Plan (savings)", lambda: open_store_plan_window(self, log=self._log)),
+            ]),
+            ("Plan", [
+                ("Meal Suggestions", self._open_meal_suggestions_window),
+                ("Weekly Plan", self._open_weekly_plan_window),
+                ("Plan My Week (guided)", self._open_plan_my_week_window),
+                ("Price Drop Alerts", lambda: open_price_drop_alerts_window(self, log=self._log)),
+            ]),
+            ("Receipts & Prices", [
+                ("Receipt Import (Azure)", lambda: open_receipt_import_window(self, log=self._log)),
+                ("Receipt Browser", lambda: open_receipt_browser_window(self, log=self._log)),
+                ("Flyer Import (Manual)", lambda: open_flyer_import_window(self, log=self._log)),
+                ("Price History", lambda: open_price_history_window(self)),
+                ("Budget Tracker", lambda: open_budget_window(self, log=self._log)),
+            ]),
+            ("Catalog & Stores", [
+                ("Item Manager", lambda: open_item_manager_window(self, log=self._log)),
+                ("Stores Management", self._open_stores_management_window),
+                ("Store Shopping Selection", lambda: open_store_settings_window(self, log=self._log)),
+            ]),
+            ("Setup & Data", [
+                ("Initialize / Verify DB", self._handle_init_db),
+                ("Preferences", lambda: open_preferences_window(self, log=self._log)),
+                ("Seed Demo Data", self._seed_demo_data),
+                ("Sync Flyers", self._manual_sync_flyers),
+                ("Backup Database", self._backup_database),
+                ("Export Data (CSV/JSON)", self._export_data),
+            ]),
+        ]
 
-        ttk.Button(
-            frame,
-            text="3) Meal Suggestions",
-            command=self._safe_call(self._open_meal_suggestions_window),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
+        grid_row = 1
+        for title, buttons in sections:
+            section = ttk.LabelFrame(frame, text=title)
+            section.grid(row=grid_row, column=0, columnspan=3, sticky="ew", pady=(0, 6))
+            for i, (label, command) in enumerate(buttons):
+                ttk.Button(
+                    section,
+                    text=label,
+                    command=self._safe_call(command),
+                    width=28,
+                ).grid(row=i // 3, column=i % 3, sticky="w", padx=4, pady=3)
+            grid_row += 1
 
-        ttk.Button(
-            frame,
-            text="4) Build Weekly Plan",
-            command=self._safe_call(self._open_weekly_plan_window),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
+    def _backup_database(self) -> None:
+        from Grocery_Sense.services.db_maintenance_service import backup_database
+        path = backup_database()
+        self._log(f"Backup saved: {path}")
+        messagebox.showinfo("Backup Complete", f"Database backed up to:\n{path}", parent=self)
 
-        ttk.Button(
-            frame,
-            text="5) Receipt Import (Azure)",
-            command=self._safe_call(lambda: open_receipt_import_window(self, log=self._log)),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
-
-        ttk.Button(
-            frame,
-            text="6) Receipt Browser + Delete/Undo",
-            command=self._safe_call(lambda: open_receipt_browser_window(self, log=self._log)),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
-
-        ttk.Button(
-            frame,
-            text="7) Stores Management",
-            command=self._safe_call(self._open_stores_management_window),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
-
-        ttk.Button(
-            frame,
-            text="8) Store Plan (with savings)",
-            command=self._safe_call(lambda: open_store_plan_window(self, log=self._log)),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
-
-        ttk.Button(
-            frame,
-            text="9) Price History Viewer",
-            command=self._safe_call(lambda: open_price_history_window(self)),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
-
-        ttk.Button(
-            frame,
-            text="10) Item Manager",
-            command=self._safe_call(lambda: open_item_manager_window(self, log=self._log)),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
-
-        ttk.Button(
-            frame,
-            text="11) Preferences",
-            command=self._safe_call(lambda: open_preferences_window(self, log=self._log)),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
-
-        ttk.Button(
-            frame,
-            text="12) Deal Feed (Active)",
-            command=self._safe_call(lambda: open_deal_feed_window(self, log=self._log)),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
-
-        ttk.Button(
-            frame,
-            text="13) Basket Optimizer (NEW)",
-            command=self._safe_call(lambda: open_basket_optimizer_window(self, log=self._log)),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
-
-        ttk.Button(
-            frame,
-            text="14) Flyer Import (Manual)",
-            command=self._safe_call(lambda: open_flyer_import_window(self, log=self._log)),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
-
-        ttk.Button(
-            frame,
-            text="15) Seed Demo Data",
-            command=self._safe_call(self._seed_demo_data),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
-
-        ttk.Button(
-            frame,
-            text="16) Sync Flyers",
-            command=self._safe_call(self._manual_sync_flyers),
-            width=35,
-        ).grid(row=row, column=0, sticky="w", pady=2)
-        row += 1
+    def _export_data(self) -> None:
+        from tkinter import filedialog
+        from Grocery_Sense.services.db_maintenance_service import export_to_csv, export_to_json
+        dest = filedialog.askdirectory(title="Choose export folder", parent=self)
+        if not dest:
+            return
+        dest_path = Path(dest)
+        csv_files = export_to_csv(dest_path / "csv")
+        json_files = export_to_json(dest_path / "json")
+        total = len(csv_files) + len(json_files)
+        self._log(f"Exported {total} files to {dest_path}")
+        messagebox.showinfo(
+            "Export Complete",
+            f"Exported {len(csv_files)} CSV and {len(json_files)} JSON files to:\n{dest_path}",
+            parent=self,
+        )
 
     def _build_log_panel(self) -> None:
         self.log_box = ScrolledText(self, state=tk.NORMAL, height=12)
@@ -239,14 +247,15 @@ class GrocerySenseApp(tk.Tk):
         self._log("Log initialized.")
 
     def _log(self, message: str) -> None:
+        _file_logger.info(message)
         try:
             self.log_box.insert(tk.END, message + "\n")
             self.log_box.see(tk.END)
         except Exception:
-            # If log box isn't built yet
             pass
 
     def _log_exception(self, prefix: str) -> None:
+        _file_logger.exception(prefix)
         self._log(prefix)
         self._log(traceback.format_exc())
 
@@ -254,9 +263,9 @@ class GrocerySenseApp(tk.Tk):
         def wrapper():
             try:
                 func()
-            except Exception:
+            except Exception as exc:
                 self._log_exception("ERROR:")
-                messagebox.showerror("Error", traceback.format_exc())
+                messagebox.showerror("Error", str(exc) or exc.__class__.__name__)
         return wrapper
 
     # ------------------------------------------------------------------
@@ -264,29 +273,123 @@ class GrocerySenseApp(tk.Tk):
     # ------------------------------------------------------------------
 
     def _handle_init_db(self) -> None:
-        initialize_database()
-        self._log("Database schema initialized / verified.")
+        self._log("Initializing database schema…")
+
+        def worker():
+            try:
+                initialize_database()
+                self.after(0, lambda: self._log("Database schema initialized / verified."))
+            except Exception as exc:
+                self.after(0, lambda e=exc: messagebox.showerror("Error", str(e)))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _open_stores_management_window(self) -> None:
-        """
-        You referenced this in the main menu.
-        If you already have a stores management window module, import and call it here.
-
-        For now: safe placeholder so the UI runs cleanly.
-        """
-        messagebox.showinfo(
-            "Stores Management",
-            "Stores Management screen is not wired in this tk_main.py yet.\n\n"
-            "If you have it already, tell me the module path (e.g. Grocery_Sense.ui.stores_management_window)\n"
-            "and I’ll hook it up.",
-        )
+        open_stores_management_window(self, log=self._log)
 
     def _seed_demo_data(self) -> None:
-        result = seed_demo_data(reset_first=True, n_price_points=200, days_back=90, seed=42)
-        self._log(
-            f"Demo seed complete: stores={result['stores']}, "
-            f"items={result['items']}, prices={result['price_points']}"
+        self._log("Seeding demo data…")
+
+        def worker():
+            try:
+                result = seed_demo_data(reset_first=True, n_price_points=200, days_back=90, seed=42)
+                self.after(0, lambda: self._log(
+                    f"Demo seed complete: stores={result['stores']}, "
+                    f"items={result['items']}, prices={result['price_points']}"
+                ))
+            except Exception as exc:
+                self.after(0, lambda e=exc: messagebox.showerror("Error", str(e)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    # ------------------------------------------------------------------
+    # Family picks (member picks → parent review)
+    # ------------------------------------------------------------------
+
+    def _refresh_request_badge(self) -> None:
+        """Update the main-menu badge with the unreviewed family-pick count."""
+        if not self._db_ready.is_set():
+            return
+        try:
+            n = family_requests_service.unreviewed_count()
+        except Exception:
+            return
+        self._requests_badge_var.set(f"🔔 Family Picks ({n})" if n else "Family Picks")
+
+    def _open_family_requests_window(self) -> None:
+        open_family_requests_window(
+            self, log=self._log, on_change=self._refresh_request_badge
         )
+        self._refresh_request_badge()
+
+    def _open_meal_picker_dialog(self, parent, member_id, member_name, *, on_done=None) -> None:
+        """Let a member pick a meal; its ingredients are added to the list.
+
+        Recipes containing a household allergen are already excluded by
+        family_requests_service.pickable_recipes() (household hard excludes).
+        """
+        names = family_requests_service.pickable_recipes()
+
+        dlg = tk.Toplevel(parent)
+        dlg.title(f"Pick a meal — {member_name}")
+        dlg.geometry("420x460")
+
+        root = ttk.Frame(dlg)
+        root.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        ttk.Label(root, text="What would you like to eat?", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        ttk.Label(root, text="Adds the meal's ingredients to the shared list.", foreground="#555").pack(
+            anchor="w", pady=(0, 8)
+        )
+
+        filter_var = tk.StringVar()
+        ttk.Entry(root, textvariable=filter_var).pack(fill=tk.X, pady=(0, 6))
+
+        list_frame = ttk.Frame(root)
+        list_frame.pack(fill=tk.BOTH, expand=True)
+        listbox = tk.Listbox(list_frame)
+        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=listbox.yview)
+        listbox.configure(yscrollcommand=scrollbar.set)
+        listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        shown: list = []
+
+        def repopulate(*_a) -> None:
+            nonlocal shown
+            q = (filter_var.get() or "").strip().lower()
+            shown = [n for n in names if q in n.lower()] if q else list(names)
+            listbox.delete(0, tk.END)
+            if not shown:
+                listbox.insert(tk.END, "(no matching recipes)")
+                return
+            for n in shown:
+                listbox.insert(tk.END, n)
+
+        filter_var.trace_add("write", repopulate)
+
+        def do_pick() -> None:
+            sel = listbox.curselection()
+            if not sel or not shown:
+                self._log("Pick a meal: select a recipe first.")
+                return
+            idx = int(sel[0])
+            if idx < 0 or idx >= len(shown):
+                return
+            recipe_name = shown[idx]
+            family_requests_service.pick_meal(member_id, recipe_name)
+            self._log(f"Meal picked: {recipe_name} — {member_name}")
+            dlg.destroy()
+            if on_done:
+                on_done()
+
+        listbox.bind("<Double-Button-1>", lambda _e: do_pick())
+
+        btns = ttk.Frame(root)
+        btns.pack(fill=tk.X, pady=(8, 0))
+        ttk.Button(btns, text="Add this meal", command=self._safe_call(do_pick)).pack(side=tk.LEFT)
+        ttk.Button(btns, text="Cancel", command=dlg.destroy).pack(side=tk.RIGHT)
+
+        repopulate()
 
     # ------------------------------------------------------------------
     # Shopping List window
@@ -303,6 +406,35 @@ class GrocerySenseApp(tk.Tk):
         ttk.Label(root, text="Shopping List", font=("Segoe UI", 12, "bold")).grid(
             row=0, column=0, sticky="w"
         )
+
+        # --- Member selector
+        members = config_store.list_members()
+        member_id_by_name = {m.name: m.id for m in members}
+        try:
+            active_name = config_store.get_active_member().name
+        except Exception:
+            active_name = members[0].name if members else ""
+
+        member_frame = ttk.Frame(root)
+        member_frame.grid(row=0, column=0, sticky="e")
+        ttk.Label(member_frame, text="Who's shopping:").pack(side=tk.LEFT, padx=(0, 6))
+        member_var = tk.StringVar(value=active_name)
+        member_cb = ttk.Combobox(
+            member_frame,
+            textvariable=member_var,
+            values=[m.name for m in members],
+            width=14,
+            state="readonly",
+        )
+        member_cb.pack(side=tk.LEFT)
+
+        def on_member_change(_evt=None) -> None:
+            name = member_var.get()
+            mid = member_id_by_name.get(name)
+            if mid is not None:
+                config_store.set_active_member_id(mid)
+
+        member_cb.bind("<<ComboboxSelected>>", on_member_change)
 
         # --- Add item panel
         add_frame = ttk.LabelFrame(root, text="Add Item")
@@ -340,22 +472,30 @@ class GrocerySenseApp(tk.Tk):
         list_frame.columnconfigure(0, weight=1)
 
         current_items = []
+        hide_checked_var = tk.BooleanVar(value=True)
 
         def refresh() -> None:
             nonlocal current_items
             listbox.delete(0, tk.END)
-            current_items = self.shopping_list_service.get_active_items(include_checked_off=True)
+            items = self.shopping_list_service.get_active_items(include_checked_off=True)
+            if hide_checked_var.get():
+                items = [it for it in items if not it.is_checked_off]
+            current_items = items
 
             if not current_items:
                 listbox.insert(tk.END, "(no items)")
                 return
 
+            # build id → name lookup fresh on each refresh (members can change)
+            id_to_name = {m.id: m.name for m in config_store.list_members()}
+
             for it in current_items:
                 status = "✓" if it.is_checked_off else " "
                 qty = "" if it.quantity is None else str(it.quantity)
                 unit = "" if it.unit is None else str(it.unit)
-                mapped = "" if it.item_id is None else f" item_id={it.item_id}"
-                line = f"[{status}] id={it.id}  {it.display_name}  {qty} {unit}{mapped}"
+                by = id_to_name.get(it.added_by_member_id, it.added_by or "")
+                by_label = f" — {by}" if by else ""
+                line = f"[{status}] {it.display_name}  {qty} {unit}{by_label}"
                 listbox.insert(tk.END, line)
 
         def get_selected_item():
@@ -388,21 +528,46 @@ class GrocerySenseApp(tk.Tk):
                     self._log("Add Item: qty must be a number (or blank).")
                     return
 
-            self.shopping_list_service.add_single_item(
-                name=name,
-                quantity=quantity,
-                unit=unit,
-                planned_store_id=None,
-                notes=None,
-                added_by="tk_ui",
-                item_id=None,
-                auto_map=True,  # mapping
-            )
-            self._log(f"Added: {name} ({quantity or ''} {unit})")
+            selected_member_name = member_var.get()
+            selected_member_id = member_id_by_name.get(selected_member_name)
+
+            member = config_store.get_member(selected_member_id) if selected_member_id is not None else None
+            is_secondary = bool(member and member.role != config_store.ROLE_MASTER)
+
+            if is_secondary:
+                # Secondary member → record a "family pick" so the parent is notified.
+                family_requests_service.pick_item(
+                    selected_member_id,
+                    name,
+                    quantity=quantity if quantity is not None else 1.0,
+                    unit=unit,
+                )
+            else:
+                self.shopping_list_service.add_single_item(
+                    name=name,
+                    quantity=quantity,
+                    unit=unit,
+                    planned_store_id=None,
+                    notes=None,
+                    added_by=selected_member_name or "tk_ui",
+                    added_by_member_id=selected_member_id,
+                    item_id=None,
+                    auto_map=True,
+                )
+            self._log(f"Added: {name} ({quantity or ''} {unit}) — {selected_member_name or 'unknown'}")
             name_var.set("")
             qty_var.set("")
             name_entry.focus_set()
             refresh()
+            self._refresh_request_badge()
+
+        def on_pick_meal() -> None:
+            selected_member_name = member_var.get()
+            selected_member_id = member_id_by_name.get(selected_member_name)
+            if selected_member_id is None:
+                self._log("Pick a meal: choose who's shopping first.")
+                return
+            self._open_meal_picker_dialog(win, selected_member_id, selected_member_name, on_done=lambda: (refresh(), self._refresh_request_badge()))
 
         def on_toggle_checked() -> None:
             it = get_selected_item()
@@ -427,11 +592,16 @@ class GrocerySenseApp(tk.Tk):
         ttk.Button(add_frame, text="Add", command=self._safe_call(on_add_item), width=10).grid(
             row=0, column=6, padx=8, pady=6
         )
+        ttk.Button(btn_frame, text="🍽 Pick a meal", command=self._safe_call(on_pick_meal)).pack(side=tk.LEFT, padx=(0, 8))
         ttk.Button(btn_frame, text="Refresh", command=self._safe_call(refresh)).pack(side=tk.LEFT, padx=(0, 8))
         ttk.Button(btn_frame, text="Check off / Uncheck", command=self._safe_call(on_toggle_checked)).pack(
             side=tk.LEFT, padx=(0, 8)
         )
         ttk.Button(btn_frame, text="Delete", command=self._safe_call(on_delete_item)).pack(side=tk.LEFT)
+        ttk.Checkbutton(
+            btn_frame, text="Hide checked-off", variable=hide_checked_var,
+            command=self._safe_call(refresh),
+        ).pack(side=tk.RIGHT)
 
         win.bind("<Return>", lambda _e: on_add_item())
 
@@ -479,6 +649,28 @@ class GrocerySenseApp(tk.Tk):
 
         listbox.bind("<<ListboxSelect>>", on_select)
 
+        def on_add_to_list():
+            idxs = listbox.curselection()
+            if not idxs:
+                self._log("Meal Suggestions: select a recipe first.")
+                return
+            s = suggestions[int(idxs[0])]
+            ings = [str(x).strip() for x in (s.recipe.get("ingredients") or []) if str(x).strip()]
+            if not ings:
+                messagebox.showinfo("No ingredients", "This recipe lists no ingredients.", parent=win)
+                return
+            for name in ings:
+                self.shopping_list_service.add_single_item(
+                    name=name, quantity=1, unit="each", added_by="meal_suggestions_ui", auto_map=True
+                )
+            recipe_name = s.recipe.get("name") or s.recipe.get("title") or "recipe"
+            self._log(f"Added {len(ings)} ingredient(s) from {recipe_name} to shopping list.")
+            messagebox.showinfo("Added", f"Added {len(ings)} ingredient(s) to your shopping list.", parent=win)
+
+        ttk.Button(
+            top_frame, text="Add ingredients to list", command=self._safe_call(on_add_to_list)
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
         def worker():
             try:
                 results = self.meal_suggestion_service.suggest_meals_for_week(max_recipes=10)
@@ -487,8 +679,19 @@ class GrocerySenseApp(tk.Tk):
                 win.after(0, lambda: _populate(None, exc))
 
         def _populate(results, error):
+            if not win.winfo_exists():
+                return
             if error is not None:
                 status_var.set(f"Error: {error}")
+                messagebox.showerror("Meal Suggestions Failed", str(error), parent=win)
+                return
+            if not results:
+                status_var.set("No suggestions — recipe catalog is empty or missing.")
+                messagebox.showerror(
+                    "Recipe Catalog Missing",
+                    "No recipes found. Add recipes.json to Grocery_Sense/recipes/ to enable meal suggestions.",
+                    parent=win,
+                )
                 return
             suggestions.extend(results)
             for s in suggestions:
@@ -536,11 +739,23 @@ class GrocerySenseApp(tk.Tk):
                     win.after(0, lambda: _populate(None, exc))
 
             def _populate(plan, error):
+                if not win.winfo_exists():
+                    return
                 build_btn.config(state="normal")
                 summary_box.delete("1.0", tk.END)
                 if error is not None:
                     summary_box.insert(tk.END, f"Error: {error}\n")
                     self._log(f"Weekly plan error: {error}")
+                    messagebox.showerror("Weekly Plan Failed", str(error), parent=win)
+                    return
+
+                if not plan.suggestions:
+                    summary_box.insert(tk.END, "No meals could be planned.\n")
+                    messagebox.showerror(
+                        "Recipe Catalog Missing",
+                        "No recipes found. Add recipes.json to Grocery_Sense/recipes/ to enable weekly planning.",
+                        parent=win,
+                    )
                     return
 
                 for line in summarize_weekly_plan(plan):
@@ -560,85 +775,126 @@ class GrocerySenseApp(tk.Tk):
         build_plan()
 
     # ------------------------------------------------------------------
-    # Store Plan (simple renderer)
+    # Plan My Week (guided: plan -> review -> add -> optimize)
     # ------------------------------------------------------------------
 
-    def _open_store_plan_window(self) -> None:
+    def _open_plan_my_week_window(self) -> None:
         win = tk.Toplevel(self)
-        win.title("Store Plan")
-        win.geometry("900x600")
+        win.title("Plan My Week")
+        win.geometry("900x640")
 
-        root = ttk.Frame(win)
-        root.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        ttk.Label(win, text="Plan My Week", font=("Segoe UI", 12, "bold")).pack(
+            side=tk.TOP, anchor="w", padx=10, pady=(10, 4)
+        )
 
-        header = ttk.Frame(root)
-        header.pack(fill=tk.X)
+        controls = ttk.Frame(win)
+        controls.pack(side=tk.TOP, fill=tk.X, padx=10)
+        ttk.Label(controls, text="Recipes:").pack(side=tk.LEFT)
+        count_var = tk.IntVar(value=6)
+        ttk.Spinbox(controls, from_=1, to=14, textvariable=count_var, width=5).pack(side=tk.LEFT, padx=(6, 12))
+        build_btn = ttk.Button(controls, text="1) Build plan")
+        build_btn.pack(side=tk.LEFT, padx=(0, 8))
+        commit_btn = ttk.Button(controls, text="2) Add to list & optimize stores", state="disabled")
+        commit_btn.pack(side=tk.LEFT)
 
-        ttk.Label(header, text="Store Plan", font=("Segoe UI", 12, "bold")).pack(side=tk.LEFT)
+        box = ScrolledText(win, state=tk.NORMAL)
+        box.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        ttk.Label(header, text="Max stores:").pack(side=tk.LEFT, padx=(20, 6))
-        max_var = tk.StringVar(value="3")
-        max_entry = ttk.Entry(header, textvariable=max_var, width=6)
-        max_entry.pack(side=tk.LEFT)
+        # Holds the reviewed plan between step 1 and step 2 so we commit the exact
+        # recipes the user saw, not a freshly re-rolled (different) set.
+        state = {"plan": None}
 
-        output = ScrolledText(root, state=tk.NORMAL)
-        output.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
+        def build_plan():
+            build_btn.config(state="disabled")
+            commit_btn.config(state="disabled")
+            box.delete("1.0", tk.END)
+            box.insert(tk.END, "Building plan…\n")
 
-        def render_plan() -> None:
-            output.delete("1.0", tk.END)
+            def worker():
+                try:
+                    plan = self.weekly_planner_service.build_weekly_plan(
+                        num_recipes=int(count_var.get()),
+                        persist_to_shopping_list=False,
+                    )
+                    win.after(0, lambda: _show_plan(plan, None))
+                except Exception as exc:
+                    win.after(0, lambda: _show_plan(None, exc))
 
-            try:
-                max_stores = int((max_var.get() or "3").strip())
-                if max_stores < 1:
-                    max_stores = 1
-            except ValueError:
-                max_stores = 3
+            threading.Thread(target=worker, daemon=True).start()
 
-            plan = self.planning_service.build_plan_for_active_list(max_stores=max_stores)
+        def _show_plan(plan, error):
+            if not win.winfo_exists():
+                return
+            build_btn.config(state="normal")
+            box.delete("1.0", tk.END)
+            if error is not None:
+                box.insert(tk.END, f"Error: {error}\n")
+                messagebox.showerror("Plan My Week Failed", str(error), parent=win)
+                return
+            if not plan.suggestions:
+                box.insert(tk.END, "No meals could be planned (recipe catalog empty?).\n")
+                return
+            state["plan"] = plan
+            box.insert(tk.END, "Review this plan, then click step 2 to commit it.\n\n")
+            for line in summarize_weekly_plan(plan):
+                box.insert(tk.END, line + "\n")
+            box.insert(tk.END, "\nIngredients to be added:\n")
+            for ing in plan.planned_ingredients:
+                box.insert(tk.END, f"  - {ing.name} (in {ing.approximate_count} recipe(s))\n")
+            commit_btn.config(state="normal")
 
-            summary = str(plan.get("summary") or "")
-            output.insert(tk.END, summary + "\n\n")
+        def commit_plan():
+            plan = state.get("plan")
+            if plan is None:
+                return
+            commit_btn.config(state="disabled")
+            build_btn.config(state="disabled")
+            box.insert(tk.END, "\nAdding ingredients and optimizing stores…\n")
 
-            stores_struct = plan.get("stores") or {}
-            if not stores_struct:
-                output.insert(tk.END, "(No stores selected)\n")
-            else:
-                store_rows = []
-                for sid, payload in stores_struct.items():
-                    items = payload.get("items") or []
-                    store_rows.append((sid, payload, len(items)))
-                store_rows.sort(key=lambda x: x[2], reverse=True)
+            def worker():
+                try:
+                    for ing in plan.planned_ingredients:
+                        self.shopping_list_service.add_single_item(
+                            name=ing.name,
+                            quantity=max(1.0, float(ing.approximate_count)),
+                            unit="each",
+                            added_by="plan_my_week_ui",
+                            item_id=ing.item_id,
+                            auto_map=True,
+                        )
+                    from Grocery_Sense.services.basket_optimizer_service import BasketOptimizerService
+                    result = BasketOptimizerService().optimize(mode="two_store")
+                    win.after(0, lambda: _show_optimized(len(plan.planned_ingredients), result, None))
+                except Exception as exc:
+                    win.after(0, lambda: _show_optimized(0, None, exc))
 
-                for _sid, payload, _count in store_rows:
-                    st = payload.get("store")
-                    items = payload.get("items") or []
-                    if not st:
-                        continue
+            threading.Thread(target=worker, daemon=True).start()
 
-                    fav = " ★" if getattr(st, "is_favorite", False) else ""
-                    pri = getattr(st, "priority", 0) or 0
-                    output.insert(tk.END, f"{st.name}{fav} (priority={pri})\n")
-                    for it in items:
-                        qty = "" if it.quantity is None else str(it.quantity)
-                        unit = "" if it.unit is None else str(it.unit)
-                        mapped = "" if it.item_id is None else f" [item_id={it.item_id}]"
-                        output.insert(tk.END, f"  - {it.display_name} {qty} {unit}{mapped}\n")
-                    output.insert(tk.END, "\n")
+        def _show_optimized(added, result, error):
+            if not win.winfo_exists():
+                return
+            build_btn.config(state="normal")
+            if error is not None:
+                box.insert(tk.END, f"Error: {error}\n")
+                messagebox.showerror("Optimize Failed", str(error), parent=win)
+                return
+            self._log(f"Plan My Week: added {added} ingredient(s), optimized {len(result.stores)} store(s).")
+            box.insert(tk.END, f"\nAdded {added} ingredient(s) to your active shopping list.\n")
+            box.insert(tk.END, f"\nOptimized trip ({result.mode}) — estimated total ${result.basket_total_estimated:.2f}\n")
+            if result.save_vs_usual_avg is not None:
+                box.insert(tk.END, f"Save vs usual: ${result.save_vs_usual_avg:.2f}\n")
+            for sp in result.stores:
+                box.insert(
+                    tk.END,
+                    f"  • {sp.store_name}: {len(sp.items)} item(s), ~${sp.total_estimated:.2f}"
+                    f" ({sp.unknown_count} unpriced)\n",
+                )
+            for w in result.warnings:
+                box.insert(tk.END, f"  ! {w}\n")
+            box.see(tk.END)
 
-            unassigned = plan.get("unassigned") or []
-            if unassigned:
-                output.insert(tk.END, "Unassigned:\n")
-                for it in unassigned:
-                    qty = "" if it.quantity is None else str(it.quantity)
-                    unit = "" if it.unit is None else str(it.unit)
-                    mapped = "" if it.item_id is None else f" [item_id={it.item_id}]"
-                    output.insert(tk.END, f"  - {it.display_name} {qty} {unit}{mapped}\n")
-                output.insert(tk.END, "\n")
-
-        ttk.Button(header, text="Refresh", command=self._safe_call(render_plan)).pack(side=tk.RIGHT)
-
-        render_plan()
-
+        build_btn.config(command=self._safe_call(build_plan))
+        commit_btn.config(command=self._safe_call(commit_plan))
 
     # ------------------------------------------------------------------
     # Flyer sync + price-drop alerts

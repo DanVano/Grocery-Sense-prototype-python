@@ -41,6 +41,8 @@ from Grocery_Sense.data.repositories.prices_repo import (
     get_price_stats_batch,
     get_price_stats_for_item,
     get_prices_for_item,
+    get_recent_avg_unit_price_by_store_batch,
+    get_recent_avg_unit_price_global_batch,
     get_six_month_low_batch,
     get_six_month_low_unit_price,
     get_usual_unit_price,
@@ -401,7 +403,10 @@ class TestBatchHelpers:
         store = create_store(name="A")
         _seed_active_flyer_price(store.id, item.id, unit_price=3.5)
         m = get_active_flyer_prices_batch([item.id], [store.id])
-        assert m[(item.id, store.id)] == {"unit_price": 3.5, "source": "flyer"}
+        entry = m[(item.id, store.id)]
+        assert entry["unit_price"] == 3.5
+        assert entry["source"] == "flyer"
+        assert "unit" in entry
 
     def test_price_stats_batch(self, isolated_db):
         store = create_store(name="A")
@@ -444,6 +449,41 @@ class TestBatchHelpers:
         m = get_last_seen_at_or_below_batch({item.id: 4.0})
         assert m[item.id] is not None
 
+    def test_recent_avg_by_store_batch_matches_recent_n_mean(self, isolated_db):
+        # Parity guard for M12: the batched helper must equal
+        # mean(get_prices_for_item(..., limit=N)) per (item, store).
+        store_a = create_store(name="A")
+        store_b = create_store(name="B")
+        item = create_item(canonical_name="x")
+        for days, price in [(1, 10.0), (2, 20.0), (3, 30.0), (4, 40.0), (5, 50.0)]:
+            add_price_point(item_id=item.id, store_id=store_a.id, unit_price=price,
+                            unit="each", source="receipt", date=_days_ago(days))
+        for days, price in [(1, 4.0), (2, 6.0)]:
+            add_price_point(item_id=item.id, store_id=store_b.id, unit_price=price,
+                            unit="each", source="receipt", date=_days_ago(days))
+
+        m = get_recent_avg_unit_price_by_store_batch(
+            [item.id], [store_a.id, store_b.id], since_days=180, limit=3
+        )
+        # store A: most-recent 3 are 10, 20, 30 -> 20; store B: 4, 6 -> 5
+        assert m[(item.id, store_a.id)] == pytest.approx(20.0)
+        assert m[(item.id, store_b.id)] == pytest.approx(5.0)
+        for sid in (store_a.id, store_b.id):
+            pts = get_prices_for_item(item_id=item.id, store_id=sid, since_days=180, limit=3)
+            prices = [p.unit_price for p in pts if p.unit_price is not None]
+            assert m[(item.id, sid)] == pytest.approx(sum(prices) / len(prices))
+
+    def test_recent_avg_global_batch_across_stores(self, isolated_db):
+        store_a = create_store(name="A")
+        store_b = create_store(name="B")
+        item = create_item(canonical_name="x")
+        add_price_point(item_id=item.id, store_id=store_a.id, unit_price=10.0,
+                        unit="each", source="receipt", date=_days_ago(1))
+        add_price_point(item_id=item.id, store_id=store_b.id, unit_price=20.0,
+                        unit="each", source="receipt", date=_days_ago(2))
+        m = get_recent_avg_unit_price_global_batch([item.id], since_days=180, limit=10)
+        assert m[item.id] == pytest.approx(15.0)
+
     def test_empty_inputs_return_empty_dicts(self, isolated_db):
         assert get_most_recent_prices_by_store_batch([], []) == {}
         assert get_most_recent_prices_global_batch([]) == {}
@@ -452,3 +492,5 @@ class TestBatchHelpers:
         assert get_usual_unit_price_batch([]) == {}
         assert get_six_month_low_batch([]) == {}
         assert get_last_seen_at_or_below_batch({}) == {}
+        assert get_recent_avg_unit_price_by_store_batch([], []) == {}
+        assert get_recent_avg_unit_price_global_batch([]) == {}

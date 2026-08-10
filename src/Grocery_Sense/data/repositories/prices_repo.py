@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import sqlite3
 from contextlib import closing
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Iterable, List, Optional, Tuple, Dict, Any
 
 from Grocery_Sense.data.connection import get_connection
@@ -86,13 +87,18 @@ def get_prices_for_item(
     (DESC + LIMIT) and reverses them so the caller still sees ASC order
     — preserving the no-limit contract.
     """
+    # Compare the stored ISO date directly (no date() wrapper) so the
+    # idx_prices_item_date / idx_prices_item_store_date indexes can serve the
+    # range. Dates are zero-padded YYYY-MM-DD, so lexical >= is chronological >=.
+    cutoff = (datetime.now(timezone.utc).date() - timedelta(days=int(since_days))).isoformat()
     sql = """
         SELECT id, item_id, store_id, receipt_id, flyer_source_id, source, date,
-               unit_price, unit, quantity, total_price, raw_name, confidence
+               unit_price, unit, quantity, total_price, raw_name, confidence,
+               norm_unit_price, norm_unit
         FROM prices
-        WHERE item_id = ? AND date(date) >= date('now', ?)
+        WHERE item_id = ? AND date >= ?
     """
-    params: List[Any] = [item_id, f"-{int(since_days)} days"]
+    params: List[Any] = [item_id, cutoff]
 
     if store_id is not None:
         sql += " AND store_id = ?"
@@ -124,6 +130,8 @@ def get_prices_for_item(
                     total_price=r[10],
                     raw_name=r[11],
                     confidence=r[12],
+                    norm_unit_price=r[13],
+                    norm_unit=r[14],
                 )
             )
     if limit is not None:
@@ -138,7 +146,8 @@ def get_most_recent_price(item_id: int, store_id: Optional[int] = None) -> Optio
     """
     sql = """
         SELECT id, item_id, store_id, receipt_id, flyer_source_id, source, date,
-               unit_price, unit, quantity, total_price, raw_name, confidence
+               unit_price, unit, quantity, total_price, raw_name, confidence,
+               norm_unit_price, norm_unit
         FROM prices
         WHERE item_id = ?
     """
@@ -168,6 +177,8 @@ def get_most_recent_price(item_id: int, store_id: Optional[int] = None) -> Optio
             total_price=row[10],
             raw_name=row[11],
             confidence=row[12],
+            norm_unit_price=row[13],
+            norm_unit=row[14],
         )
 
 
@@ -175,12 +186,13 @@ def get_price_stats_for_item(item_id: int, store_id: Optional[int] = None, since
     """
     Returns basic stats for an item's price history. Computed via SQL aggregate.
     """
+    cutoff = (datetime.now(timezone.utc).date() - timedelta(days=int(since_days))).isoformat()
     sql = (
         "SELECT MIN(unit_price), MAX(unit_price), AVG(unit_price), COUNT(*) "
         "FROM prices "
-        "WHERE item_id = ? AND date(date) >= date('now', ?) AND unit_price IS NOT NULL"
+        "WHERE item_id = ? AND date >= ? AND unit_price IS NOT NULL"
     )
-    params: List[Any] = [int(item_id), f"-{int(since_days)} days"]
+    params: List[Any] = [int(item_id), cutoff]
     if store_id is not None:
         sql += " AND store_id = ?"
         params.append(int(store_id))
@@ -265,6 +277,7 @@ def list_unit_prices(
         "FROM prices",
         "WHERE item_id = ?",
         "  AND unit_price IS NOT NULL",
+        "  AND unit_price > 0",
         "  AND date(COALESCE(date, created_at)) >= date('now', ?)",
     ]
     params: List[Any] = [int(item_id), _since_clause(since_days)]
@@ -338,6 +351,7 @@ def get_six_month_low_unit_price(
         "FROM prices",
         "WHERE item_id = ?",
         "  AND unit_price IS NOT NULL",
+        "  AND unit_price > 0",
         "  AND date(COALESCE(date, created_at)) >= date('now', ?)",
     ]
     params: List[Any] = [int(item_id), _since_clause(since_days)]
@@ -370,6 +384,7 @@ def get_last_seen_at_or_below(
         "FROM prices",
         "WHERE item_id = ?",
         "  AND unit_price IS NOT NULL",
+        "  AND unit_price > 0",
         "  AND unit_price <= ?",
         "  AND date(COALESCE(date, created_at)) >= date('now', ?)",
     ]
@@ -670,7 +685,8 @@ def _price_cols() -> str:
     """Column list used by all batch SELECT statements (matches PricePoint field order)."""
     return (
         "id, item_id, store_id, receipt_id, flyer_source_id, source, date, "
-        "unit_price, unit, quantity, total_price, raw_name, confidence"
+        "unit_price, unit, quantity, total_price, raw_name, confidence, "
+        "norm_unit_price, norm_unit"
     )
 
 
@@ -680,6 +696,7 @@ def _row_to_price_point(r) -> PricePoint:
         flyer_source_id=r[4], source=r[5], date=r[6],
         unit_price=r[7], unit=r[8], quantity=r[9],
         total_price=r[10], raw_name=r[11], confidence=r[12],
+        norm_unit_price=r[13], norm_unit=r[14],
     )
 
 
@@ -776,7 +793,9 @@ def get_active_flyer_prices_batch(
             for chunk in _chunks(items):
                 item_ph = ",".join("?" * len(chunk))
                 sql = (
-                    "SELECT p.item_id, p.store_id, MIN(p.unit_price) AS unit_price "
+                    "SELECT p.item_id, p.store_id, "
+                    "       MIN(COALESCE(p.norm_unit_price, p.unit_price)) AS unit_price, "
+                    "       COALESCE(p.norm_unit, p.unit, 'each') AS unit "
                     "FROM prices p "
                     "JOIN flyer_sources fs ON fs.id = p.flyer_source_id "
                     "WHERE p.source = 'flyer' "
@@ -791,9 +810,11 @@ def get_active_flyer_prices_batch(
                     item_id = int(r[0])
                     store_id = int(r[1])
                     unit_price = float(r[2])
-                    out[(item_id, store_id)] = {"unit_price": unit_price, "source": "flyer"}
-    except Exception:
-        pass
+                    unit = str(r[3] or "each").strip().lower()
+                    out[(item_id, store_id)] = {"unit_price": unit_price, "unit": unit, "source": "flyer"}
+    except sqlite3.OperationalError as e:
+        if "flyer_sources" not in str(e).lower():
+            raise
     return out
 
 
@@ -816,7 +837,7 @@ def get_price_stats_batch(
         for chunk in _chunks(items):
             placeholders = ",".join("?" * len(chunk))
             sql = (
-                "SELECT item_id, MIN(unit_price), MAX(unit_price), AVG(unit_price), COUNT(*) "
+                "SELECT item_id, MIN(COALESCE(norm_unit_price, unit_price)), MAX(COALESCE(norm_unit_price, unit_price)), AVG(COALESCE(norm_unit_price, unit_price)), COUNT(*) "
                 "FROM prices "
                 f"WHERE item_id IN ({placeholders}) "
                 "  AND unit_price IS NOT NULL "
@@ -833,4 +854,163 @@ def get_price_stats_batch(
                     avg_price=float(r[3]),
                     count=int(r[4]),
                 )
+    return out
+
+
+def get_recent_avg_unit_price_by_store_batch(
+    item_ids: List[int],
+    store_ids: List[int],
+    *,
+    since_days: int = 180,
+    limit: int = 12,
+) -> Dict[Tuple[int, int], float]:
+    """Average of the most-recent `limit` unit prices per (item_id, store_id),
+    within the trailing `since_days` window, in a single (chunked) query.
+
+    Replaces the O(items x stores) per-pair calls PlanningService made via
+    mean(get_prices_for_item(item_id, store_id, since_days, limit)). Parity: rows
+    are ranked by date DESC and the top `limit` are kept (NULL unit_prices count
+    toward the limit, exactly like get_prices_for_item's DESC+LIMIT), then AVG
+    skips NULLs (matching the Python `p.unit_price is not None` filter).
+    """
+    items = _coerce_id_list(item_ids)
+    stores = _coerce_id_list(store_ids)
+    if not items or not stores:
+        return {}
+
+    cutoff = (datetime.now(timezone.utc).date() - timedelta(days=int(since_days))).isoformat()
+    lim = int(limit) if limit and int(limit) > 0 else None
+    store_ph = ",".join("?" * len(stores))
+    out: Dict[Tuple[int, int], float] = {}
+    with closing(get_connection()) as conn:
+        for chunk in _chunks(items):
+            item_ph = ",".join("?" * len(chunk))
+            if lim is None:
+                sql = (
+                    "SELECT item_id, store_id, AVG(COALESCE(norm_unit_price, unit_price)) "
+                    "FROM prices "
+                    f"WHERE item_id IN ({item_ph}) AND store_id IN ({store_ph}) "
+                    "  AND date >= ? AND unit_price IS NOT NULL "
+                    "GROUP BY item_id, store_id"
+                )
+                params: Tuple[Any, ...] = (*chunk, *stores, cutoff)
+            else:
+                sql = (
+                    "SELECT item_id, store_id, AVG(COALESCE(norm_unit_price, unit_price)) FROM ( "
+                    "  SELECT item_id, store_id, norm_unit_price, unit_price, "
+                    "         ROW_NUMBER() OVER ( "
+                    "             PARTITION BY item_id, store_id ORDER BY date DESC, id DESC "
+                    "         ) AS rn "
+                    "  FROM prices "
+                    f"  WHERE item_id IN ({item_ph}) AND store_id IN ({store_ph}) AND date >= ? "
+                    ") WHERE rn <= ? AND unit_price IS NOT NULL "
+                    "GROUP BY item_id, store_id"
+                )
+                params = (*chunk, *stores, cutoff, lim)
+            for r in conn.execute(sql, params).fetchall():
+                if r[2] is not None:
+                    out[(int(r[0]), int(r[1]))] = float(r[2])
+    return out
+
+
+def get_recent_avg_unit_price_global_batch(
+    item_ids: List[int],
+    *,
+    since_days: int = 180,
+    limit: int = 20,
+) -> Dict[int, float]:
+    """Like get_recent_avg_unit_price_by_store_batch but across ALL stores —
+    PlanningService's overall fallback when an item has no store-specific
+    history. Mirrors mean(get_prices_for_item(item_id, store_id=None, ...)).
+    """
+    items = _coerce_id_list(item_ids)
+    if not items:
+        return {}
+
+    cutoff = (datetime.now(timezone.utc).date() - timedelta(days=int(since_days))).isoformat()
+    lim = int(limit) if limit and int(limit) > 0 else None
+    out: Dict[int, float] = {}
+    with closing(get_connection()) as conn:
+        for chunk in _chunks(items):
+            item_ph = ",".join("?" * len(chunk))
+            if lim is None:
+                sql = (
+                    "SELECT item_id, AVG(COALESCE(norm_unit_price, unit_price)) FROM prices "
+                    f"WHERE item_id IN ({item_ph}) AND date >= ? AND unit_price IS NOT NULL "
+                    "GROUP BY item_id"
+                )
+                params: Tuple[Any, ...] = (*chunk, cutoff)
+            else:
+                sql = (
+                    "SELECT item_id, AVG(COALESCE(norm_unit_price, unit_price)) FROM ( "
+                    "  SELECT item_id, norm_unit_price, unit_price, "
+                    "         ROW_NUMBER() OVER ( "
+                    "             PARTITION BY item_id ORDER BY date DESC, id DESC "
+                    "         ) AS rn "
+                    "  FROM prices "
+                    f"  WHERE item_id IN ({item_ph}) AND date >= ? "
+                    ") WHERE rn <= ? AND unit_price IS NOT NULL "
+                    "GROUP BY item_id"
+                )
+                params = (*chunk, cutoff, lim)
+            for r in conn.execute(sql, params).fetchall():
+                if r[1] is not None:
+                    out[int(r[0])] = float(r[1])
+    return out
+
+
+def get_purchase_cadence_batch(
+    item_ids: List[int],
+    *,
+    since_days: int = 180,
+) -> Dict[int, Tuple[Optional[float], Optional[float]]]:
+    """Return avg purchase interval and typical quantity for staple items.
+
+    Returns {item_id: (avg_interval_days, typical_qty)}.
+    avg_interval_days is None if fewer than 2 distinct receipts.
+    typical_qty is None if no quantity data.
+    Uses only receipt-sourced rows (source='receipt' or receipt_id IS NOT NULL).
+    """
+    items = _coerce_id_list(item_ids)
+    if not items:
+        return {}
+
+    out: Dict[int, Tuple[Optional[float], Optional[float]]] = {}
+    with closing(get_connection()) as conn:
+        for chunk in _chunks(items):
+            item_ph = ",".join("?" * len(chunk))
+            sql = f"""
+            SELECT
+                item_id,
+                COUNT(DISTINCT receipt_id) AS receipt_count,
+                MIN(date(COALESCE(date, created_at))) AS first_date,
+                MAX(date(COALESCE(date, created_at))) AS last_date,
+                AVG(CASE WHEN quantity IS NOT NULL AND quantity > 0 THEN quantity END) AS avg_qty
+            FROM prices
+            WHERE item_id IN ({item_ph})
+              AND (source = 'receipt' OR receipt_id IS NOT NULL)
+              AND date(COALESCE(date, created_at)) >= date('now', ?)
+            GROUP BY item_id
+            """
+            rows = conn.execute(sql, (*chunk, _since_clause(since_days))).fetchall()
+            for r in rows:
+                item_id = int(r[0])
+                receipt_count = int(r[1]) if r[1] is not None else 0
+                first_date = r[2]
+                last_date = r[3]
+                avg_qty = float(r[4]) if r[4] is not None else None
+
+                avg_interval: Optional[float] = None
+                if receipt_count >= 2 and first_date and last_date and first_date != last_date:
+                    from datetime import date as _date
+                    try:
+                        d0 = _date.fromisoformat(first_date)
+                        d1 = _date.fromisoformat(last_date)
+                        span = (d1 - d0).days
+                        if span > 0:
+                            avg_interval = span / (receipt_count - 1)
+                    except ValueError:
+                        pass
+
+                out[item_id] = (avg_interval, avg_qty)
     return out

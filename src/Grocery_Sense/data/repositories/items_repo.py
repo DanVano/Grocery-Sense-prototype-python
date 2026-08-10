@@ -30,7 +30,7 @@ from __future__ import annotations
 from contextlib import closing
 from typing import Dict, List, Optional, Tuple
 
-from Grocery_Sense.data.connection import get_connection
+from Grocery_Sense.data.connection import connection_scope, get_connection
 from Grocery_Sense.domain.models import Item
 
 
@@ -105,7 +105,15 @@ def create_item(
     if not name_clean:
         raise ValueError("canonical_name cannot be empty")
 
-    with get_connection() as conn, closing(conn.cursor()) as cur:
+    # Match get_item_by_name's case-insensitive equality so "Milk" and "milk"
+    # don't both create rows: the canonical_name UNIQUE index is case-sensitive
+    # (BINARY), but lookups fold case, so INSERT OR IGNORE alone would let
+    # case-variants coexist and split an item's price history.
+    existing = get_item_by_name(name_clean)
+    if existing:
+        return existing
+
+    with connection_scope() as conn, closing(conn.cursor()) as cur:
         cur.execute(
             """
             INSERT OR IGNORE INTO items (
@@ -150,7 +158,7 @@ def get_item_by_id(item_id: int) -> Optional[Item]:
     """
     Fetch an Item by id.
     """
-    with get_connection() as conn, closing(conn.cursor()) as cur:
+    with connection_scope() as conn, closing(conn.cursor()) as cur:
         cur.execute(
             """
             SELECT
@@ -185,7 +193,7 @@ def get_item_by_name(canonical_name: str) -> Optional[Item]:
 
     name_low = name_clean.lower()
 
-    with get_connection() as conn, closing(conn.cursor()) as cur:
+    with connection_scope() as conn, closing(conn.cursor()) as cur:
         cur.execute(
             """
             SELECT
@@ -214,7 +222,7 @@ def list_all_item_names() -> List[Tuple[int, str]]:
 
     Used by IngredientMappingService for fuzzy matching.
     """
-    with get_connection() as conn, closing(conn.cursor()) as cur:
+    with connection_scope() as conn, closing(conn.cursor()) as cur:
         cur.execute(
             """
             SELECT id, canonical_name
@@ -241,7 +249,7 @@ def list_items(include_untracked: bool = False) -> List[Item]:
     """
     List items, optionally including untracked ones.
     """
-    with get_connection() as conn, closing(conn.cursor()) as cur:
+    with connection_scope() as conn, closing(conn.cursor()) as cur:
         if include_untracked:
             cur.execute(
                 """
@@ -286,7 +294,7 @@ def set_item_tracked(item_id: int, is_tracked: bool) -> None:
     """
     Mark an item as tracked/untracked.
     """
-    with get_connection() as conn, closing(conn.cursor()) as cur:
+    with connection_scope() as conn, closing(conn.cursor()) as cur:
         cur.execute(
             """
             UPDATE items
@@ -323,6 +331,38 @@ def get_items_by_ids(item_ids: List[int]) -> Dict[int, Item]:
     return out
 
 
+def get_items_by_names(names: List[str]) -> Dict[str, Item]:
+    """Return a {lowercased_name: Item} map for many canonical names in a single
+    (chunked) query. Case-insensitive, mirroring get_item_by_name.
+
+    Replaces N calls to get_item_by_name(name) in loops. Missing names are
+    silently omitted.
+    """
+    cleaned: List[str] = []
+    seen: set = set()
+    for n in names:
+        nl = (n or "").strip().lower()
+        if nl and nl not in seen:
+            seen.add(nl)
+            cleaned.append(nl)
+    if not cleaned:
+        return {}
+
+    out: Dict[str, Item] = {}
+    with closing(get_connection()) as conn:
+        for chunk in _chunked(cleaned, 900):
+            placeholders = ",".join("?" * len(chunk))
+            sql = (
+                "SELECT id, canonical_name, category, default_unit, "
+                "typical_package_size, typical_package_unit, is_tracked, notes, created_at "
+                f"FROM items WHERE lower(canonical_name) IN ({placeholders})"
+            )
+            for row in conn.execute(sql, chunk).fetchall():
+                item = _row_to_item(row)
+                out[item.canonical_name.strip().lower()] = item
+    return out
+
+
 def _chunked(seq: List[int], size: int):
     for i in range(0, len(seq), size):
         yield seq[i:i + size]
@@ -332,7 +372,7 @@ def update_item_notes(item_id: int, notes: Optional[str]) -> None:
     """
     Update notes field.
     """
-    with get_connection() as conn, closing(conn.cursor()) as cur:
+    with connection_scope() as conn, closing(conn.cursor()) as cur:
         cur.execute(
             """
             UPDATE items

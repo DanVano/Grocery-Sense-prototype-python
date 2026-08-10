@@ -12,19 +12,29 @@ def isolated_db(tmp_path):
     import Grocery_Sense.data.connection as _conn_mod
     from Grocery_Sense.data.schema import create_tables, _migrate
     from Grocery_Sense.integrations import azure_docint_client as _azure_mod
+    from Grocery_Sense.services.unit_normalization_service import (
+        UnitNormalizationService,
+        _SCHEMA_READY,
+    )
 
     db_path = str(tmp_path / "test.db")
     _conn_mod._TEST_DB_PATH = db_path
     _conn_mod._integrity_checked.clear()
     _azure_mod._reset_schema_cache_for_tests()
+    _SCHEMA_READY.discard(db_path)
 
     conn = _conn_mod.get_connection()
     create_tables(conn)
     _migrate(conn)
     conn.close()
 
+    # prices_repo now selects norm_unit_price/norm_unit unconditionally;
+    # these columns are owned by UnitNormalizationService.ensure_schema().
+    UnitNormalizationService().ensure_schema()
+
     yield
 
     _conn_mod._TEST_DB_PATH = None
     _conn_mod._integrity_checked.clear()
     _azure_mod._reset_schema_cache_for_tests()
+    _SCHEMA_READY.discard(db_path)

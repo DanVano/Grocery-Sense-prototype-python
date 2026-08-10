@@ -5,8 +5,23 @@ SQLite schema definition and initialization for the Price app backend.
 """
 
 from typing import Optional
-from pathlib import Path
 import sqlite3
+
+
+_SCHEMA_VERSION = 1  # bump when adding a new numbered migration below
+
+
+def _get_schema_version(cur: sqlite3.Cursor) -> int:
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)"
+    )
+    row = cur.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
+    return int(row[0]) if row else 0
+
+
+def _set_schema_version(cur: sqlite3.Cursor, version: int) -> None:
+    cur.execute("DELETE FROM schema_version")
+    cur.execute("INSERT INTO schema_version (version) VALUES (?)", (version,))
 
 
 def create_tables(conn: sqlite3.Connection) -> None:
@@ -29,6 +44,8 @@ def create_tables(conn: sqlite3.Connection) -> None:
             flipp_store_id  TEXT,
             is_favorite     INTEGER NOT NULL DEFAULT 0,
             priority        INTEGER NOT NULL DEFAULT 0,
+            shop_here       INTEGER NOT NULL DEFAULT 1,
+            is_active       INTEGER NOT NULL DEFAULT 1,
             notes           TEXT,
             created_at      TEXT NOT NULL DEFAULT (datetime('now'))
         );
@@ -166,6 +183,11 @@ def create_tables(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_prices_item_coalesced "
         "ON prices(item_id, date(COALESCE(date, created_at)));"
     )
+    # Supports the ON DELETE CASCADE from receipts -> prices; without it a
+    # receipt delete / undo / re-ingest full-scans prices to find rows to cascade.
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_prices_receipt_id ON prices(receipt_id);"
+    )
 
     # --- receipt_line_items ---
     cur.execute(
@@ -245,8 +267,28 @@ def create_tables(conn: sqlite3.Connection) -> None:
     cur.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_shopping_list_active
-        ON shopping_list(is_active, planned_store_id);
+        ON shopping_list(is_active, is_deleted, is_checked_off, planned_store_id);
         """
+    )
+
+    # --- member_requests ("family picks": a member picks a meal/item, parent reviews) ---
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS member_requests (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            member_id    INTEGER,                 -- household member id (lives in config JSON, not a DB FK)
+            member_name  TEXT,                    -- snapshot for display
+            kind         TEXT NOT NULL,           -- 'meal' | 'item'
+            label        TEXT NOT NULL,           -- recipe name or item text
+            item_row_ids TEXT,                    -- JSON list of shopping_list.id this pick created
+            created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+            reviewed     INTEGER NOT NULL DEFAULT 0
+        );
+        """
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_member_requests_unreviewed "
+        "ON member_requests(reviewed, id);"
     )
 
     # --- user_profile ---
@@ -267,20 +309,6 @@ def create_tables(conn: sqlite3.Connection) -> None:
             has_nut_allergy     INTEGER NOT NULL DEFAULT 0,
             created_at          TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at          TEXT
-        );
-        """
-    )
-
-    # --- sync_meta ---
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS sync_meta (
-            id                         INTEGER PRIMARY KEY AUTOINCREMENT,
-            device_role                TEXT,     -- 'primary' | 'secondary'
-            instance_id                TEXT,     -- random UUID per installation
-            last_sync_from_primary_at  TEXT,
-            last_sync_to_primary_at    TEXT,
-            created_at                 TEXT NOT NULL DEFAULT (datetime('now'))
         );
         """
     )
@@ -337,6 +365,11 @@ def create_tables(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (receipt_id) REFERENCES receipts(id) ON DELETE CASCADE
         );
         """
+    )
+
+    # schema_version table (ledger for numbered migrations)
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)"
     )
 
     conn.commit()
@@ -451,22 +484,52 @@ def _migrate_receipt_support_tables(conn: sqlite3.Connection) -> None:
 def _migrate(conn: sqlite3.Connection) -> None:
     """Apply incremental migrations for columns added after the initial schema."""
     cur = conn.cursor()
-    existing = {row[1] for row in cur.execute("PRAGMA table_info(shopping_list)").fetchall()}
 
-    migrations = [
-        ("category",           "ALTER TABLE shopping_list ADD COLUMN category TEXT"),
-        ("added_by_member_id", "ALTER TABLE shopping_list ADD COLUMN added_by_member_id INTEGER"),
-        ("is_deleted",         "ALTER TABLE shopping_list ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0"),
-    ]
-    for col, sql in migrations:
-        if col not in existing:
-            cur.execute(sql)
+    current_version = _get_schema_version(cur)
+
+    # -------------------------------------------------------------------------
+    # Pre-ledger migrations (PRAGMA probes) — applied when version == 0.
+    # These ran before the schema_version table existed; stamp as version 1
+    # once they are done so future migrations can key off the integer.
+    # -------------------------------------------------------------------------
+    if current_version < 1:
+        existing = {row[1] for row in cur.execute("PRAGMA table_info(shopping_list)").fetchall()}
+        for col, sql in [
+            ("category",           "ALTER TABLE shopping_list ADD COLUMN category TEXT"),
+            ("added_by_member_id", "ALTER TABLE shopping_list ADD COLUMN added_by_member_id INTEGER"),
+            ("is_deleted",         "ALTER TABLE shopping_list ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0"),
+        ]:
+            if col not in existing:
+                cur.execute(sql)
+
+        stores_cols = {row[1] for row in cur.execute("PRAGMA table_info(stores)").fetchall()}
+        if "shop_here" not in stores_cols:
+            cur.execute("ALTER TABLE stores ADD COLUMN shop_here INTEGER NOT NULL DEFAULT 1")
+        if "is_active" not in stores_cols:
+            cur.execute("ALTER TABLE stores ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
+        if "distance_km" not in stores_cols:
+            cur.execute("ALTER TABLE stores ADD COLUMN distance_km REAL")
+
+        cur.execute("DROP INDEX IF EXISTS idx_shopping_list_active")
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_shopping_list_active "
+            "ON shopping_list(is_active, is_deleted, is_checked_off, planned_store_id)"
+        )
+        _set_schema_version(cur, 1)
+
+    # -------------------------------------------------------------------------
+    # Add new numbered migrations here (version 2, 3, …):
+    #
+    # if current_version < 2:
+    #     cur.execute("ALTER TABLE foo ADD COLUMN bar TEXT")
+    #     _set_schema_version(cur, 2)
+    # -------------------------------------------------------------------------
 
     conn.commit()
     _migrate_receipt_support_tables(conn)
 
 
-def initialize_database(base_dir: Optional[Path] = None) -> None:
+def initialize_database() -> None:
     """
     Convenience helper: open a connection, create tables, close it.
 
@@ -474,7 +537,7 @@ def initialize_database(base_dir: Optional[Path] = None) -> None:
     """
     from .connection import get_connection  # local import to avoid cycles
 
-    conn = get_connection(base_dir)
+    conn = get_connection()
     try:
         create_tables(conn)
         _migrate(conn)

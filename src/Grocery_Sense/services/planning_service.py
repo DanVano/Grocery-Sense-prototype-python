@@ -20,11 +20,16 @@ Cost model (v1):
 from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
-from statistics import mean
 
 from Grocery_Sense.data.repositories.stores_repo import list_stores
-from Grocery_Sense.data.repositories.items_repo import get_item_by_name, get_item_by_id
-from Grocery_Sense.data.repositories.prices_repo import get_prices_for_item
+from Grocery_Sense.data.repositories.items_repo import (
+    get_item_by_name,
+    get_items_by_ids,
+)
+from Grocery_Sense.data.repositories.prices_repo import (
+    get_recent_avg_unit_price_by_store_batch,
+    get_recent_avg_unit_price_global_batch,
+)
 from Grocery_Sense.domain.models import Store, ShoppingListItem, Item
 from Grocery_Sense.services.shopping_list_service import ShoppingListService
 
@@ -89,6 +94,9 @@ class PlanningService:
           8) Compute basket total
           9) Compute baseline "all at favorite store" and estimated savings
         """
+        from Grocery_Sense.services.unit_normalization_service import UnitNormalizationService
+        UnitNormalizationService().ensure_schema()
+
         items = self._shopping.get_active_items(include_checked_off=False, store_id=None)
         stores = list_stores()
 
@@ -109,14 +117,27 @@ class PlanningService:
         # Map store_id -> Store for quick lookup
         store_by_id: Dict[int, Store] = {s.id: s for s in stores}
 
+        # Resolve every shopping item to a canonical Item ONCE, and batch ALL
+        # price aggregation up front, so the per-item/per-store loops below are
+        # in-memory dict lookups instead of O(items x stores) DB round-trips.
+        resolved_map = self._resolve_items_bulk(items)
+        item_ids = sorted({it.id for it in resolved_map.values() if it})
+        store_ids = [s.id for s in stores]
+        store_avg_map = get_recent_avg_unit_price_by_store_batch(
+            item_ids, store_ids, since_days=days_back, limit=history_limit
+        )
+        overall_avg_map = get_recent_avg_unit_price_global_batch(
+            item_ids, since_days=days_back, limit=max(history_limit, 20)
+        )
+
         # Step 3: best (cheapest) store per item using history
         item_best_store: Dict[int, Optional[int]] = {}
         for itm in items:
             best_store_id, _ = self._find_best_store_for_item(
                 itm,
                 stores,
-                days_back=days_back,
-                history_limit=history_limit,
+                store_avg_map=store_avg_map,
+                resolved_map=resolved_map,
             )
             item_best_store[itm.id] = best_store_id
 
@@ -171,8 +192,9 @@ class PlanningService:
             unassigned=unassigned,
             stores=stores,
             baseline_store=baseline_store,
-            days_back=days_back,
-            history_limit=history_limit,
+            resolved_map=resolved_map,
+            store_avg_map=store_avg_map,
+            overall_avg_map=overall_avg_map,
         )
 
         # Build summary (now includes cost lines)
@@ -214,74 +236,46 @@ class PlanningService:
 
     # ---------- Internal helpers ----------
 
-    def _resolve_item(self, shopping_item: ShoppingListItem) -> Optional[Item]:
+    def _resolve_items_bulk(
+        self, shopping_items: List[ShoppingListItem]
+    ) -> Dict[int, Optional[Item]]:
         """
-        Resolve a ShoppingListItem to a canonical Item row if possible.
-        Prefer shopping_item.item_id if populated; otherwise try name lookup.
+        Resolve every ShoppingListItem to a canonical Item row, keyed by the
+        shopping-list-item id. Items carrying an item_id are resolved in a single
+        batched query; only name-only stragglers fall back to a name lookup.
         """
-        if shopping_item.item_id:
-            it = get_item_by_id(int(shopping_item.item_id))
-            if it:
-                return it
+        id_based = [int(si.item_id) for si in shopping_items if si.item_id]
+        items_by_id = get_items_by_ids(id_based) if id_based else {}
 
-        name = (shopping_item.display_name or "").strip()
-        if not name:
-            return None
-        return get_item_by_name(name)
-
-    def _avg_price_for_item_store(
-        self,
-        item_id: int,
-        store_id: Optional[int],
-        *,
-        days_back: int,
-        history_limit: int,
-    ) -> Optional[float]:
-        pts = get_prices_for_item(
-            item_id=item_id,
-            since_days=days_back,
-            store_id=store_id,
-            limit=int(history_limit) if history_limit else None,
-        )
-        prices = [p.unit_price for p in pts if p.unit_price is not None]
-        if not prices:
-            return None
-        return float(mean(prices))
+        out: Dict[int, Optional[Item]] = {}
+        for si in shopping_items:
+            it: Optional[Item] = None
+            if si.item_id:
+                it = items_by_id.get(int(si.item_id))
+            if it is None:
+                name = (si.display_name or "").strip()
+                if name:
+                    it = get_item_by_name(name)
+            out[si.id] = it
+        return out
 
     def _estimate_unit_price(
         self,
         item_id: int,
         store_id: int,
         *,
-        days_back: int,
-        history_limit: int,
-        overall_fallback_cache: Dict[int, Optional[float]],
-        store_cache: Dict[Tuple[int, int], Optional[float]],
+        store_avg_map: Dict[Tuple[int, int], float],
+        overall_avg_map: Dict[int, float],
     ) -> Optional[float]:
         """
-        Estimate unit price for (item, store):
-          - store-specific average
-          - fallback to overall average for the item (all stores)
+        Estimate unit price for (item, store) from the precomputed maps:
+          - store-specific average, else
+          - overall average for the item (all stores).
         """
-        key = (item_id, store_id)
-        if key not in store_cache:
-            store_cache[key] = self._avg_price_for_item_store(
-                item_id=item_id,
-                store_id=store_id,
-                days_back=days_back,
-                history_limit=history_limit,
-            )
-        if store_cache[key] is not None:
-            return store_cache[key]
-
-        if item_id not in overall_fallback_cache:
-            overall_fallback_cache[item_id] = self._avg_price_for_item_store(
-                item_id=item_id,
-                store_id=None,
-                days_back=days_back,
-                history_limit=max(history_limit, 20),
-            )
-        return overall_fallback_cache[item_id]
+        v = store_avg_map.get((item_id, store_id))
+        if v is not None:
+            return v
+        return overall_avg_map.get(item_id)
 
     def _compute_costs(
         self,
@@ -290,8 +284,9 @@ class PlanningService:
         unassigned: List[ShoppingListItem],
         stores: List[Store],
         baseline_store: Optional[Store],
-        days_back: int,
-        history_limit: int,
+        resolved_map: Dict[int, Optional[Item]],
+        store_avg_map: Dict[Tuple[int, int], float],
+        overall_avg_map: Dict[int, float],
     ) -> Dict[str, object]:
         """
         Compute:
@@ -301,9 +296,6 @@ class PlanningService:
           - savings (baseline - plan)
           - coverage stats
         """
-        overall_fallback_cache: Dict[int, Optional[float]] = {}
-        store_cache: Dict[Tuple[int, int], Optional[float]] = {}
-
         total_items = sum(len(v) for v in plan_by_store.values()) + len(unassigned)
 
         per_store: Dict[int, Dict[str, object]] = {}
@@ -321,7 +313,7 @@ class PlanningService:
             store_missing = 0
 
             for s_item in items:
-                item_row = self._resolve_item(s_item)
+                item_row = resolved_map.get(s_item.id)
                 qty = float(s_item.quantity) if s_item.quantity is not None else 1.0
 
                 if not item_row:
@@ -332,10 +324,8 @@ class PlanningService:
                 unit_price = self._estimate_unit_price(
                     item_id=item_row.id,
                     store_id=store_id,
-                    days_back=days_back,
-                    history_limit=history_limit,
-                    overall_fallback_cache=overall_fallback_cache,
-                    store_cache=store_cache,
+                    store_avg_map=store_avg_map,
+                    overall_avg_map=overall_avg_map,
                 )
 
                 if unit_price is None:
@@ -367,17 +357,15 @@ class PlanningService:
         if baseline_store:
             for store_id, items in plan_by_store.items():
                 for s_item in items:
-                    item_row = self._resolve_item(s_item)
+                    item_row = resolved_map.get(s_item.id)
                     qty = float(s_item.quantity) if s_item.quantity is not None else 1.0
                     if not item_row:
                         continue
                     unit_price = self._estimate_unit_price(
                         item_id=item_row.id,
                         store_id=baseline_store.id,
-                        days_back=days_back,
-                        history_limit=history_limit,
-                        overall_fallback_cache=overall_fallback_cache,
-                        store_cache=store_cache,
+                        store_avg_map=store_avg_map,
+                        overall_avg_map=overall_avg_map,
                     )
                     if unit_price is None:
                         continue
@@ -407,14 +395,14 @@ class PlanningService:
         shopping_item: ShoppingListItem,
         stores: List[Store],
         *,
-        days_back: int = 180,
-        history_limit: int = 12,
+        store_avg_map: Dict[Tuple[int, int], float],
+        resolved_map: Dict[int, Optional[Item]],
     ) -> Tuple[Optional[int], Optional[float]]:
         """
-        For a given ShoppingListItem, check historical prices across stores
-        and return (best_store_id, best_avg_price) or (None, None) if no data.
+        For a given ShoppingListItem, find the cheapest store from the precomputed
+        per-(item, store) average map, or (None, None) if no data.
         """
-        item_row = self._resolve_item(shopping_item)
+        item_row = resolved_map.get(shopping_item.id)
         if not item_row:
             return None, None
 
@@ -422,17 +410,9 @@ class PlanningService:
         best_price: Optional[float] = None
 
         for store in stores:
-            pts = get_prices_for_item(
-                item_id=item_row.id,
-                store_id=store.id,
-                since_days=days_back,
-                limit=int(history_limit) if history_limit else None,
-            )
-            prices = [p.unit_price for p in pts if p.unit_price is not None]
-            if not prices:
+            avg_price = store_avg_map.get((item_row.id, store.id))
+            if avg_price is None:
                 continue
-
-            avg_price = float(mean(prices))
             if best_price is None or avg_price < best_price:
                 best_price = avg_price
                 best_store_id = store.id

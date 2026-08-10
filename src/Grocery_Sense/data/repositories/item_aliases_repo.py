@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Iterator, Optional, List
 from datetime import datetime, timezone
 
-from Grocery_Sense.data.connection import get_connection
+from Grocery_Sense.data.connection import connection_scope, get_connection
 
 
 @contextmanager
@@ -16,9 +16,8 @@ def _conn_ctx(conn: Optional[sqlite3.Connection]) -> Iterator[sqlite3.Connection
     if conn is not None:
         yield conn
         return
-    with get_connection() as c:
+    with connection_scope() as c:
         yield c
-        c.commit()
 
 
 
@@ -104,7 +103,7 @@ class ItemAliasesRepo:
             )
 
     def list_all(self) -> List[ItemAlias]:
-        with get_connection() as conn:
+        with connection_scope() as conn:
             rows = conn.execute(
                 """
                 SELECT id, alias_text, item_id, confidence, source, created_at, last_seen_at, times_seen

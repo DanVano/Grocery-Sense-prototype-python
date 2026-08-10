@@ -1,17 +1,31 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from Grocery_Sense.data.connection import get_connection
+from Grocery_Sense.data.connection import connection_scope, get_connection, get_db_path
+
+
+# Schema-ensure guards: keyed by resolved DB path so per-test tmp DBs each
+# re-create price_drop_alerts; the lock serialises the CREATE/ALTER across the
+# concurrent startup + post-sync alert-check threads.
+_ALERTS_TABLES_READY: set = set()
+_ALERTS_SCHEMA_LOCK = threading.Lock()
+
+
+def _alerts_db_key() -> str:
+    from Grocery_Sense.data import connection as _conn
+    return _conn._TEST_DB_PATH or str(get_db_path())
 from Grocery_Sense.data.repositories import stores_repo, prices_repo
 from Grocery_Sense.data.repositories.items_repo import get_items_by_ids
 from Grocery_Sense.data.repositories.prices_repo import (
     get_active_flyer_prices_batch,
     get_most_recent_prices_by_store_batch,
     get_most_recent_prices_global_batch,
+    get_purchase_cadence_batch,
     get_usual_unit_price_batch,
     get_six_month_low_batch,
     get_last_seen_at_or_below_batch,
@@ -45,6 +59,8 @@ class PriceDropAlert:
     warnings: List[str]
     soft_excluded_by: List[str]
     soft_exclude_hit: Optional[str]
+    suggested_qty: Optional[float] = None
+    suggested_qty_note: Optional[str] = None
 
     @staticmethod
     def _from_dict(d: Dict[str, Any]) -> "PriceDropAlert":
@@ -86,6 +102,8 @@ class PriceDropAlert:
             warnings=warnings,
             soft_excluded_by=[],
             soft_exclude_hit=None,
+            suggested_qty=float(d["suggested_qty"]) if d.get("suggested_qty") is not None else None,
+            suggested_qty_note=d.get("suggested_qty_note"),
         )
 
 
@@ -113,8 +131,22 @@ class PriceDropAlertService:
 
     MIN_RECEIPT_SAMPLES_FOR_USUAL = 4
 
+    # Stock-up quantity guidance
+    # ponytail: no shelf-life model — cap at 3× normal so we never tell someone
+    # to buy 6 weeks of milk. Add per-item perishability if produce/dairy over-suggests.
+    STOCK_UP_HORIZON_DAYS = 42   # ~6 weeks of forward coverage
+    MAX_STOCKUP_MULTIPLE = 3     # never suggest more than 3× typical qty
+
+    # Minimum six-month-low price (dollars) treated as a valid divisor. Doubles as
+    # the ZeroDivisionError guard for pct_above_low math AND a deliberate
+    # signal-suppressor for near-free items where a percentage swing is noise.
+    # Do NOT drop this floor in a refactor without replacing the divisor guard.
+    MIN_LOW_PRICE_FLOOR = 0.05
+
     def __init__(self, *, log=None) -> None:
+        from Grocery_Sense.services.unit_normalization_service import UnitNormalizationService
         self._log = log
+        UnitNormalizationService().ensure_schema()
         self._ensure_tables()
 
     # ----------------------- public API -----------------------
@@ -217,6 +249,12 @@ class PriceDropAlertService:
             near_low_ceilings, since_days=self.LOW_LOOKBACK_DAYS
         )
 
+        # Cadence: needed only for stock-up items to compute suggested_qty
+        stock_up_candidate_ids = list(near_low_ceilings.keys())
+        cadence_map = get_purchase_cadence_batch(
+            stock_up_candidate_ids, since_days=self.USUAL_LOOKBACK_DAYS
+        ) if stock_up_candidate_ids else {}
+
         # Second pass: build alerts using fully pre-loaded data
         out: List[Dict[str, Any]] = []
 
@@ -236,7 +274,7 @@ class PriceDropAlertService:
                 pct_below_usual = ((usual_price - best_unit) / usual_price) * 100.0
 
             pct_above_low: Optional[float] = None
-            if six_low is not None and six_low >= 0.05:
+            if six_low is not None and six_low >= self.MIN_LOW_PRICE_FLOOR:
                 pct_above_low = ((best_unit - six_low) / six_low) * 100.0
 
             last_seen_at_or_below = last_seen_map.get(item_id)
@@ -261,6 +299,19 @@ class PriceDropAlertService:
 
             line_count, receipt_count = staple_item_ids.get(item_id, (0, 0))
             is_staple = 1 if (receipt_count >= 3 or line_count >= 4) else 0
+
+            # Suggested buy quantity for stock-up alerts
+            suggested_qty: Optional[float] = None
+            suggested_qty_note: Optional[str] = None
+            if alert_kind in ("stock_up", "both"):
+                suggested_qty = self._compute_suggested_qty(cadence_map, item_id=item_id)
+                if suggested_qty is not None:
+                    avg_interval, _ = cadence_map.get(item_id, (None, None))
+                    interval_weeks = round((avg_interval or 0) / 7)
+                    suggested_qty_note = (
+                        f"You buy this every ~{interval_weeks} week(s); "
+                        f"at this low, buy {suggested_qty:.4g}."
+                    )
 
             notes = self._build_notes(
                 item_name=str(item.canonical_name),
@@ -295,6 +346,8 @@ class PriceDropAlertService:
                     "source": best_source,
                     "last_seen_at_or_below": last_seen_at_or_below,
                     "notes": notes,
+                    "suggested_qty": float(suggested_qty) if suggested_qty is not None else None,
+                    "suggested_qty_note": suggested_qty_note,
                 }
             )
 
@@ -317,7 +370,7 @@ class PriceDropAlertService:
 
     def get_open_alerts(self) -> List[Dict[str, Any]]:
         self._ensure_tables()
-        with get_connection() as conn:
+        with connection_scope() as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 """
@@ -331,7 +384,7 @@ class PriceDropAlertService:
 
     def dismiss_alert(self, alert_id: int) -> None:
         self._ensure_tables()
-        with get_connection() as conn:
+        with connection_scope() as conn:
             conn.execute(
                 """
                 UPDATE price_drop_alerts
@@ -351,10 +404,13 @@ class PriceDropAlertService:
         Returns number of alerts inserted.
         """
         self._ensure_tables()
-        since = (datetime.now() - timedelta(days=int(max(1, days)))).strftime("%Y-%m-%d")
+        # Use UTC to match how price dates are stored (_now_utc_iso / SQLite
+        # date('now')); a local-time cutoff was off by a day near midnight / in
+        # non-UTC zones.
+        since = (datetime.now(timezone.utc) - timedelta(days=int(max(1, days)))).strftime("%Y-%m-%d")
 
         inserted = 0
-        with get_connection() as conn:
+        with connection_scope() as conn:
             conn.row_factory = sqlite3.Row
 
             rows = conn.execute(
@@ -386,7 +442,7 @@ class PriceDropAlertService:
             )
             six_low_map = get_six_month_low_batch(unique_item_ids, since_days=self.LOW_LOOKBACK_DAYS)
 
-            batch: List[Tuple[Any, ...]] = []
+            best: Dict[Tuple[int, int, str], Tuple[Any, ...]] = {}
             for r in rows:
                 item_id = int(r["item_id"])
                 store_id = int(r["store_id"] or 0)
@@ -408,13 +464,21 @@ class PriceDropAlertService:
                 if pct_below < self.DROP_BELOW_USUAL_THRESHOLD_PCT:
                     continue
 
-                six_low, six_low_when = six_low_map.get(item_id, (None, None))
-                pct_above_low = ((paid - six_low) / six_low) * 100.0 if (six_low and six_low >= 0.05) else None
-
                 kind = "below_usual"
                 key = AlertKey(item_id=item_id, store_id=store_id, alert_kind=kind)
                 if key in dismissed_keys:
                     continue
+
+                # Keep only the strongest (largest pct_below) row per
+                # (item, store, kind): a staple bought cheaply several times in
+                # the window should yield ONE alert, not one per receipt line.
+                dedupe_key = (item_id, store_id, kind)
+                prev = best.get(dedupe_key)
+                if prev is not None and prev[6] >= pct_below:
+                    continue
+
+                six_low, six_low_when = six_low_map.get(item_id, (None, None))
+                pct_above_low = ((paid - six_low) / six_low) * 100.0 if (six_low and six_low >= self.MIN_LOW_PRICE_FLOOR) else None
 
                 notes = self._build_notes(
                     item_name=str(item.canonical_name),
@@ -431,7 +495,7 @@ class PriceDropAlertService:
                     low_when=six_low_when,
                 )
 
-                batch.append((
+                best[dedupe_key] = (
                     item_id,
                     store_id,
                     store_name,
@@ -448,9 +512,10 @@ class PriceDropAlertService:
                     "receipt",
                     None,
                     notes,
-                ))
-                inserted += 1
+                )
 
+            batch = list(best.values())
+            inserted = len(batch)
             if batch:
                 conn.executemany(
                     """
@@ -470,7 +535,17 @@ class PriceDropAlertService:
     # ----------------------- internals -----------------------
 
     def _ensure_tables(self) -> None:
-        with get_connection() as conn:
+        key = _alerts_db_key()
+        if key in _ALERTS_TABLES_READY:
+            return
+        with _ALERTS_SCHEMA_LOCK:
+            if key in _ALERTS_TABLES_READY:  # re-check inside the lock
+                return
+            self._build_alert_tables()
+            _ALERTS_TABLES_READY.add(key)
+
+    def _build_alert_tables(self) -> None:
+        with connection_scope() as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS price_drop_alerts (
@@ -533,7 +608,7 @@ class PriceDropAlertService:
     def _persist_engine_alerts(self, alerts: List[Dict[str, Any]]) -> int:
         self._ensure_tables()
 
-        with get_connection() as conn:
+        with connection_scope() as conn:
             conn.row_factory = sqlite3.Row
             dismissed_keys = self._load_recent_dismissed_keys(conn)
 
@@ -597,6 +672,25 @@ class PriceDropAlertService:
             except Exception:
                 pass
         return out
+
+    def _compute_suggested_qty(
+        self,
+        cadence_map: Dict[int, Tuple[Optional[float], Optional[float]]],
+        *,
+        item_id: int,
+    ) -> Optional[float]:
+        """Compute how many units to buy given purchase cadence and stock-up horizon.
+        Returns None if cadence is unknown.
+        """
+        avg_interval, typical_qty = cadence_map.get(item_id, (None, None))
+        if not avg_interval or avg_interval <= 0 or not typical_qty or typical_qty <= 0:
+            return None
+        raw_qty = (self.STOCK_UP_HORIZON_DAYS / avg_interval) * typical_qty
+        qty = min(
+            round(raw_qty / typical_qty) * typical_qty,
+            typical_qty * self.MAX_STOCKUP_MULTIPLE,
+        )
+        return max(qty, typical_qty)
 
     def _passes_stockup_cooldown(self, last_seen_iso: Optional[str]) -> bool:
         # If we can't tell, allow (it will still be near-low)

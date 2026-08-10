@@ -96,11 +96,13 @@ class EffectivePreferences:
     hard_excludes: Set[str] = field(default_factory=set)
 
     soft_excludes: Dict[str, List[str]] = field(default_factory=dict)  # ingredient -> member names
+    soft_exclude_ids: Dict[str, Set[int]] = field(default_factory=dict)  # ingredient -> member ids (consensus)
     soft_exclude_counts: Dict[str, int] = field(default_factory=dict)  # ingredient -> secondary count
     strong_soft_excludes: Set[str] = field(default_factory=set)
 
     excluded_proteins_hard: Set[str] = field(default_factory=set)
     excluded_proteins_soft: Dict[str, List[str]] = field(default_factory=dict)  # protein -> member names
+    soft_protein_exclude_ids: Dict[str, Set[int]] = field(default_factory=dict)  # protein -> member ids
     soft_protein_exclude_counts: Dict[str, int] = field(default_factory=dict)  # protein -> secondary count
     strong_soft_proteins: Set[str] = field(default_factory=set)
 
@@ -180,22 +182,30 @@ def _norm_dict(values: Any) -> Dict[str, Any]:
     return {}
 
 
-def _add_soft(m: EffectivePreferences, key: str, member_name: str) -> None:
+def _add_soft(m: EffectivePreferences, key: str, member_name: str, member_id: Optional[int] = None) -> None:
     k = _norm_token(key)
     if not k:
         return
     m.soft_excludes.setdefault(k, [])
     if member_name not in m.soft_excludes[k]:
         m.soft_excludes[k].append(member_name)
+    # Track member ids so consensus counts are correct even when two members
+    # share a display name.
+    ids = m.soft_exclude_ids.setdefault(k, set())
+    if member_id is not None:
+        ids.add(int(member_id))
 
 
-def _add_soft_protein(m: EffectivePreferences, key: str, member_name: str) -> None:
+def _add_soft_protein(m: EffectivePreferences, key: str, member_name: str, member_id: Optional[int] = None) -> None:
     k = _norm_token(key)
     if not k:
         return
     m.excluded_proteins_soft.setdefault(k, [])
     if member_name not in m.excluded_proteins_soft[k]:
         m.excluded_proteins_soft[k].append(member_name)
+    ids = m.soft_protein_exclude_ids.setdefault(k, set())
+    if member_id is not None:
+        ids.add(int(member_id))
 
 
 def _get_master_member():
@@ -328,8 +338,9 @@ def compute_effective_preferences() -> EffectivePreferences:
 
     # 7) Soft excludes:
     # - master soft_excludes are tracked but NOT starred by default
+    master_id = getattr(master, "id", None)
     for x in _norm_list(mprof.get("soft_excludes", [])):
-        _add_soft(eff, x, master_name)
+        _add_soft(eff, x, master_name, master_id)
 
     # - secondary soft excludes, plus secondary "hard_excludes" treated as soft (redundant)
     for mem in members:
@@ -342,26 +353,29 @@ def compute_effective_preferences() -> EffectivePreferences:
 
         prof = _profile(mem)
         mem_name = getattr(mem, "name", "Member")
+        mem_id = getattr(mem, "id", None)
 
         for x in _norm_list(prof.get("soft_excludes", [])) + _norm_list(prof.get("hard_excludes", [])):
-            _add_soft(eff, x, mem_name)
+            _add_soft(eff, x, mem_name, mem_id)
 
         for p in _norm_list(prof.get("excluded_proteins", [])):
-            _add_soft_protein(eff, p, mem_name)
+            _add_soft_protein(eff, p, mem_name, mem_id)
 
-    # 8) Strong soft excludes (SECONDARY consensus only)
+    # 8) Strong soft excludes (SECONDARY consensus only).
+    # Counts are computed over member IDS (not names) so two members sharing a
+    # display name are still counted distinctly.
     n_members = len(members) if members else 0
 
-    for ing, names in eff.soft_excludes.items():
-        secondary_names = [n for n in names if n != master_name]
-        s_count = len(secondary_names)
+    for ing in eff.soft_excludes:
+        ids = eff.soft_exclude_ids.get(ing, set())
+        s_count = len({i for i in ids if i != master_id})
         eff.soft_exclude_counts[ing] = s_count
         if _strong_soft_threshold(n_members, s_count):
             eff.strong_soft_excludes.add(ing)
 
-    for prot, names in eff.excluded_proteins_soft.items():
-        secondary_names = [n for n in names if n != master_name]
-        s_count = len(secondary_names)
+    for prot in eff.excluded_proteins_soft:
+        ids = eff.soft_protein_exclude_ids.get(prot, set())
+        s_count = len({i for i in ids if i != master_id})
         eff.soft_protein_exclude_counts[prot] = s_count
         if _strong_soft_threshold(n_members, s_count):
             eff.strong_soft_proteins.add(prot)
@@ -369,6 +383,47 @@ def compute_effective_preferences() -> EffectivePreferences:
     _eff_cache = eff
     _eff_cache_key = cache_key
     return eff
+
+
+def get_meal_profile() -> Dict[str, Any]:
+    """
+    Flat meal/recipe profile resolved HOUSEHOLD-WIDE.
+
+    Unlike config_store.get_user_profile (which reads the master member only),
+    this routes through compute_effective_preferences so that EVERY member's
+    allergy is a hard, household-wide exclusion, and SOFT excludes never
+    hard-ban a recipe (soft == keep the item, just don't star it).
+
+    Returns the keys MealSuggestionService / RecipeEngine consume:
+      allergies, avoid_ingredients, restrictions, prefer_meats, avoid_meats,
+      favorite_tags
+    """
+    eff = compute_effective_preferences()
+    mprof = _profile(_get_master_member())
+
+    restrictions: List[str] = []
+    if not mprof.get("eats_meat", True):
+        restrictions.append("no_meat")
+    if not mprof.get("eats_fish", True):
+        restrictions.append("no_fish")
+    # Master protein exclusions are hard household-wide; surface them as the
+    # no_<protein> tokens the meal hard-filter honours.
+    for p in sorted(eff.excluded_proteins_hard):
+        restrictions.append(f"no_{p}")
+
+    return {
+        # hard bans: household allergies (any member) + master hard_excludes
+        "allergies": sorted(eff.hard_excludes),
+        # soft excludes must NOT hard-ban recipes, so this stays empty
+        "avoid_ingredients": [],
+        "restrictions": restrictions,
+        "prefer_meats": [
+            k for k, v in eff.protein_weights.items()
+            if isinstance(v, (int, float)) and v > 1.0
+        ],
+        "avoid_meats": sorted(eff.excluded_proteins_hard),
+        "favorite_tags": list(mprof.get("favorite_tags", []) or []),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -660,46 +715,23 @@ def validate_add_exclude(
 # Reset helper (for "Reset to household baseline" button)
 # ---------------------------------------------------------------------------
 
-def reset_secondary_member_to_household_baseline(member_id: int) -> None:
+def reset_secondary_member_to_household_baseline(member_id: int) -> bool:
     """
-    Clears SECONDARY member overrides back to baseline, while preserving allergies.
+    Reset a SECONDARY member's overrides back to the household baseline while
+    preserving allergies. Backs the UI "Reset to household baseline" button.
 
-    Meant to back the UI button:
-      "Reset to household baseline"
+    The master-guard POLICY lives here; the actual data reset + renormalization
+    is owned by config_store (the single source of truth) so the two
+    implementations can never diverge. Returns True when a reset occurred.
     """
-    cfg = config_store.load_config()
     master = _get_master_member()
-
-    # Don't allow resetting the master via this function
     try:
         if int(member_id) == int(master.id):
-            return
+            return False
     except Exception:
         pass
 
-    mem = _find_member(cfg, member_id)
-    if not mem:
-        return
-
-    prof = _profile(mem)
-    allergies = _norm_list(prof.get("allergies", []))
-
-    # Remove override keys
-    for k in list(_SECONDARY_OVERRIDE_KEYS):
-        prof.pop(k, None)
-
-    # Restore allergies
-    if allergies:
-        prof["allergies"] = allergies
-    else:
-        prof.pop("allergies", None)
-
-    try:
-        mem.profile = prof
-    except Exception:
-        pass
-
-    config_store.save_config(cfg)
+    return config_store.reset_secondary_member_to_household_baseline(member_id)
 
 
 # ---------------------------------------------------------------------------

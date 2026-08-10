@@ -287,3 +287,57 @@ def test_alert_key_is_hashable_and_equal_on_tuple():
     assert a == b
     assert hash(a) == hash(b)
     assert {a, b} == {a}
+
+
+# ---------------------------------------------------------------------------
+# Stock-up quantity (suggested_qty)
+# ---------------------------------------------------------------------------
+
+
+class TestSuggestedQty:
+    def test_known_cadence_yields_suggested_qty(self, isolated_db):
+        """With known interval and qty, alert carries suggested_qty and note."""
+        from Grocery_Sense.data.repositories.prices_repo import get_purchase_cadence_batch
+        from Grocery_Sense.services.price_drop_alert_service import PriceDropAlertService
+
+        svc = PriceDropAlertService()
+        # cadence: avg_interval=14 days (buy every 2 weeks), typical_qty=1.0
+        # horizon=42 days => raw=3 units, capped at MAX_STOCKUP_MULTIPLE=3
+        cadence = {1: (14.0, 1.0)}  # item_id -> (avg_interval, typical_qty)
+        qty = svc._compute_suggested_qty(cadence, item_id=1)
+        assert qty is not None
+        assert qty == pytest.approx(3.0)
+
+    def test_unknown_cadence_returns_none(self, isolated_db):
+        from Grocery_Sense.services.price_drop_alert_service import PriceDropAlertService
+        svc = PriceDropAlertService()
+        qty = svc._compute_suggested_qty({}, item_id=99)
+        assert qty is None
+
+    def test_cap_at_max_multiple(self, isolated_db):
+        from Grocery_Sense.services.price_drop_alert_service import PriceDropAlertService
+        svc = PriceDropAlertService()
+        # 7-day interval, qty=1 => 6 raw, capped at 3
+        cadence = {1: (7.0, 1.0)}
+        qty = svc._compute_suggested_qty(cadence, item_id=1)
+        assert qty == pytest.approx(3.0)
+
+    def test_from_dict_passes_through_suggested_qty(self):
+        from Grocery_Sense.services.price_drop_alert_service import PriceDropAlert
+        row = {
+            "alert_kind": "stock_up",
+            "item_name": "butter",
+            "store_name": "Costco",
+            "current_price": 4.99,
+            "suggested_qty": 2.0,
+            "suggested_qty_note": "Buy 2 (every ~3 weeks).",
+        }
+        alert = PriceDropAlert._from_dict(row)
+        assert alert.suggested_qty == pytest.approx(2.0)
+        assert alert.suggested_qty_note == "Buy 2 (every ~3 weeks)."
+
+    def test_from_dict_handles_missing_suggested_qty(self):
+        from Grocery_Sense.services.price_drop_alert_service import PriceDropAlert
+        alert = PriceDropAlert._from_dict({"alert_kind": "below_usual"})
+        assert alert.suggested_qty is None
+        assert alert.suggested_qty_note is None

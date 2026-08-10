@@ -45,6 +45,43 @@ class MultiBuyDealService:
         line_total: Optional[float],
         discount: Optional[float],
     ) -> DealAdjusted:
+        # If a quantity WAS reported but is unusable (<=0 / non-numeric) we
+        # default it to 1.0 below, which can distort the effective unit price.
+        # Disclose that substitution in the deal_note rather than coercing it
+        # silently (DealAdjusted is frozen, so we rebuild it with the marker).
+        qty_reported_but_invalid = False
+        if quantity is not None:
+            try:
+                qty_reported_but_invalid = float(quantity) <= 0
+            except (TypeError, ValueError):
+                qty_reported_but_invalid = True
+
+        da = self._adjust_core(
+            description=description,
+            quantity=quantity,
+            unit_price=unit_price,
+            line_total=line_total,
+            discount=discount,
+        )
+        if qty_reported_but_invalid:
+            note = f"{da.deal_note};qty_defaulted" if da.deal_note else "qty_defaulted"
+            da = DealAdjusted(
+                quantity=da.quantity,
+                unit_price=da.unit_price,
+                line_total=da.line_total,
+                deal_note=note,
+            )
+        return da
+
+    def _adjust_core(
+        self,
+        *,
+        description: str,
+        quantity: Optional[float],
+        unit_price: Optional[float],
+        line_total: Optional[float],
+        discount: Optional[float],
+    ) -> DealAdjusted:
         desc = (description or "").strip()
         try:
             q = float(quantity) if quantity is not None else 1.0
@@ -94,7 +131,10 @@ class MultiBuyDealService:
             # If quantity is a multiple of bundle qty, keep q and compute implied line total
             implied_total = eff * q
             implied_total = implied_total - (disc or 0.0)
-            return DealAdjusted(quantity=q, unit_price=eff, line_total=implied_total, deal_note=f"bundle({bundle_qty}/${bundle_total})_from_text")
+            deal_note = f"bundle({bundle_qty}/${bundle_total})_from_text"
+            if q < bundle_qty:
+                deal_note += ";qty_below_bundle_unverified"
+            return DealAdjusted(quantity=q, unit_price=eff, line_total=implied_total, deal_note=deal_note)
 
         # 3) "2 @ 4.00" means 2 units at $4 each
         at = self._parse_at_price(desc)
@@ -153,19 +193,39 @@ class MultiBuyDealService:
 
         m = self._re_slash.search(t)
         if m:
-            qty = int(m.group(1))
-            total = float(m.group(2))
-            if qty > 0 and total > 0:
-                return qty, total
+            bundle = self._validate_bundle(m.group(1), m.group(2))
+            if bundle is not None:
+                return bundle
 
         m = self._re_for.search(t)
         if m:
-            qty = int(m.group(1))
-            total = float(m.group(2))
-            if qty > 0 and total > 0:
-                return qty, total
+            bundle = self._validate_bundle(m.group(1), m.group(2))
+            if bundle is not None:
+                return bundle
 
         return None
+
+    @staticmethod
+    def _validate_bundle(qty_s: str, total_s: str) -> Optional[Tuple[int, float]]:
+        """Accept only plausible multi-buy bundles.
+
+        The slash/`for` patterns are otherwise greedy enough to misread ordinary
+        text as a bundle price, e.g. "1/2 cup" (qty 1) or a date like "12/2024"
+        (total 2024). A real multi-buy has qty >= 2 and a grocery-scale total, so:
+          - qty in [2, 24]
+          - 0 < total <= 999
+        This keeps legitimate dollarless bundles like "2/5" ("2 for $5") working.
+        """
+        try:
+            qty = int(qty_s)
+            total = float(total_s)
+        except (TypeError, ValueError):
+            return None
+        if qty < 2 or qty > 24:
+            return None
+        if total <= 0 or total > 999:
+            return None
+        return qty, total
 
     def _parse_at_price(self, text: str) -> Optional[Tuple[int, float]]:
         t = (text or "").lower()

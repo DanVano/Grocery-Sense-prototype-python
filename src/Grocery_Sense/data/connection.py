@@ -10,8 +10,9 @@ Stores the database inside src/pricebrain/data/db/
 from __future__ import annotations
 
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 # Name of the SQLite file
 DB_FILENAME = "grocery_sense.db"
@@ -24,18 +25,19 @@ _integrity_checked: set = set()
 _TEST_DB_PATH: Optional[str] = None
 
 
-def get_db_path(base_dir: Optional[Path] = None) -> Path:
-    """
-    Return the full path to the DB file.
+def current_db_path() -> Path:
+    """Return the resolved path of the active database (honoring _TEST_DB_PATH)."""
+    if _TEST_DB_PATH is not None:
+        return Path(_TEST_DB_PATH)
+    return get_db_path()
 
-    If base_dir is None, we put the DB inside the 'db' directory next to this file:
-        src/grocery_sense/data/db/Grocery_Sense.db
-    """
-    if base_dir is None:
-        base_dir = Path(__file__).resolve().parent / "db"
-    else:
-        base_dir = Path(base_dir)
 
+def get_db_path() -> Path:
+    """
+    Return the full path to the DB file, inside the 'db' directory next to this
+    file: src/grocery_sense/data/db/grocery_sense.db
+    """
+    base_dir = Path(__file__).resolve().parent / "db"
     base_dir.mkdir(parents=True, exist_ok=True)
     return base_dir / DB_FILENAME
 
@@ -64,26 +66,64 @@ def _check_integrity(conn: sqlite3.Connection, db_path: Path) -> None:
     _integrity_checked.add(path_key)
 
 
-def get_connection(base_dir: Optional[Path] = None) -> sqlite3.Connection:
+def get_connection() -> sqlite3.Connection:
     """
     Open a SQLite connection to our DB.
 
-    base_dir is optional; if not provided, we use the default 'db' directory.
     On the first connection per process, runs PRAGMA integrity_check and raises
     RuntimeError immediately if corruption is detected.
     """
     if _TEST_DB_PATH is not None:
+        if _TEST_DB_PATH == ":memory:":
+            raise ValueError(
+                "Grocery Sense opens one SQLite connection per call, so a "
+                "':memory:' database would be a fresh, empty DB on every call "
+                "(schema and data invisible across repos). Use a temp-file DB "
+                "for tests instead of ':memory:'."
+            )
         db_path = Path(_TEST_DB_PATH)
     else:
-        db_path = get_db_path(base_dir)
+        db_path = get_db_path()
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row  # nicer dict-like access
     conn.execute("PRAGMA foreign_keys = ON")
+    # Wait briefly for a competing writer instead of failing instantly with
+    # "database is locked" when background threads (flyer sync, alert check)
+    # overlap on the same file.
+    conn.execute("PRAGMA busy_timeout = 5000")
+    # Per-connection performance pragmas (not persistent like WAL, so set every
+    # open). None affect durability under WAL + synchronous=NORMAL.
+    # ponytail: fixed sizes; bump only if a profiler on a real large DB says so.
+    conn.execute("PRAGMA cache_size = -16000")   # ~16 MB page cache (negative = KB)
+    conn.execute("PRAGMA temp_store = MEMORY")    # temp B-trees / sorts in RAM
+    conn.execute("PRAGMA mmap_size = 268435456")  # memory-map up to 256 MB of the DB
     if str(db_path) not in _integrity_checked and str(db_path) != ":memory:":
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA synchronous = NORMAL")
     _check_integrity(conn, db_path)
     return conn
+
+
+@contextmanager
+def connection_scope() -> Iterator[sqlite3.Connection]:
+    """
+    Open a connection, commit on clean exit, roll back on error, and ALWAYS close.
+
+    Drop-in replacement for `with get_connection() as conn:`. The raw sqlite3
+    connection context manager commits/rolls-back but does NOT close the
+    connection, so bare `with get_connection() as conn:` leaks the handle until
+    GC. This wrapper preserves the commit-on-success / rollback-on-error
+    semantics and adds deterministic close.
+    """
+    conn = get_connection()
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def reset_integrity_cache() -> None:

@@ -118,6 +118,30 @@ class TestBundleParsing:
         assert math.isclose(r.unit_price, 2.50)
         assert "qty_fix" in r.deal_note
 
+    def test_fraction_is_not_a_bundle(self):
+        """'1/2 cup' must not be misread as a 1-for-$2 bundle (qty < 2)."""
+        r = self.svc.adjust(
+            description="butter 1/2 cup",
+            quantity=1,
+            unit_price=3.49,
+            line_total=None,
+            discount=None,
+        )
+        assert "bundle" not in r.deal_note
+        assert r.unit_price == 3.49
+
+    def test_date_like_is_not_a_bundle(self):
+        """'12/2024' must not be misread as a 12-for-$2024 bundle (total out of range)."""
+        r = self.svc.adjust(
+            description="best before 12/2024",
+            quantity=1,
+            unit_price=2.99,
+            line_total=None,
+            discount=None,
+        )
+        assert "bundle" not in r.deal_note
+        assert r.unit_price == 2.99
+
 
 class TestBogoParsing:
     svc = MultiBuyDealService()

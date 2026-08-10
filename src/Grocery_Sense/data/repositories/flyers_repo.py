@@ -4,11 +4,16 @@ import functools
 import hashlib
 import re
 import sqlite3
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from Grocery_Sense.data.connection import get_connection
+from Grocery_Sense.data.connection import connection_scope, get_connection
+
+# Serialises ensure_schema across threads so the flyer_deals rebuild migration
+# (DROP/RENAME) can never run concurrently with another caller.
+_FLYERS_SCHEMA_LOCK = threading.Lock()
 
 # -----------------------------------------------------------------------------
 # Helpers: hashing (used by ingest), phrase-safe matching (used by preferences)
@@ -181,7 +186,14 @@ class FlyersRepo:
     def ensure_schema(self) -> None:
         if getattr(self, "_schema_ready", False):
             return
-        with get_connection() as conn:
+        with _FLYERS_SCHEMA_LOCK:
+            if getattr(self, "_schema_ready", False):  # re-check inside the lock
+                return
+            self._build_schema()
+            self._schema_ready = True
+
+    def _build_schema(self) -> None:
+        with connection_scope() as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS flyer_batches (
@@ -263,7 +275,6 @@ class FlyersRepo:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_flyer_batches_valid ON flyer_batches(valid_from, valid_to)")
 
             conn.commit()
-        self._schema_ready = True
 
     @staticmethod
     def _migrate_flyer_deals_item_id_to_integer(conn: sqlite3.Connection) -> None:
@@ -331,7 +342,7 @@ class FlyersRepo:
 
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
-        with get_connection() as conn:
+        with connection_scope() as conn:
             # stores.name has no UNIQUE constraint, so ON CONFLICT(name) would
             # raise — use SELECT-then-INSERT instead (single-user assumption).
             row = conn.execute("SELECT id FROM stores WHERE name = ?", (name,)).fetchone()
@@ -348,7 +359,7 @@ class FlyersRepo:
 
     def list_stores(self) -> List[StoreRow]:
         self.ensure_schema()
-        with get_connection() as conn:
+        with connection_scope() as conn:
             try:
                 rows = conn.execute("SELECT id, name FROM stores ORDER BY name ASC").fetchall()
             except Exception:
@@ -379,7 +390,7 @@ class FlyersRepo:
         self.ensure_schema()
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
-        with get_connection() as conn:
+        with connection_scope() as conn:
             conn.execute(
                 """
                 INSERT INTO flyer_batches (store_id, valid_from, valid_to, source_type, source_ref, note, status, imported_at)
@@ -415,7 +426,7 @@ class FlyersRepo:
 
     def set_batch_status(self, flyer_id: int, status: str) -> None:
         self.ensure_schema()
-        with get_connection() as conn:
+        with connection_scope() as conn:
             conn.execute("UPDATE flyer_batches SET status=? WHERE id=?", (status, int(flyer_id)))
             conn.commit()
 
@@ -429,7 +440,7 @@ class FlyersRepo:
     ) -> int:
         self.ensure_schema()
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        with get_connection() as conn:
+        with connection_scope() as conn:
             conn.execute(
                 """
                 INSERT INTO flyer_assets (flyer_id, asset_type, path, sha256, created_at)
@@ -450,7 +461,7 @@ class FlyersRepo:
     ) -> int:
         self.ensure_schema()
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        with get_connection() as conn:
+        with connection_scope() as conn:
             conn.execute(
                 """
                 INSERT INTO flyer_raw_json (flyer_id, sha256, json, created_at)
@@ -490,7 +501,7 @@ class FlyersRepo:
         self.ensure_schema()
         now = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
-        with get_connection() as conn:
+        with connection_scope() as conn:
             conn.execute(
                 """
                 INSERT INTO flyer_deals (
@@ -526,6 +537,56 @@ class FlyersRepo:
             conn.commit()
             return int(row[0])
 
+    def add_deals(self, deals: List[Dict[str, Any]]) -> int:
+        """Bulk-insert many flyer deals in ONE transaction (executemany).
+
+        Use this from ingest loops instead of calling add_deal once per deal,
+        which opened a fresh connection + commit per row. Each dict accepts the
+        same keys as add_deal's keyword arguments. Returns the number inserted.
+        """
+        if not deals:
+            return 0
+        self.ensure_schema()
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        rows = [
+            (
+                int(d["flyer_id"]),
+                int(d["asset_id"]) if d.get("asset_id") is not None else None,
+                int(d["store_id"]),
+                d.get("page_index"),
+                d.get("title"),
+                d.get("description"),
+                d.get("price_text"),
+                d.get("deal_qty"),
+                d.get("deal_total"),
+                d.get("unit_price"),
+                d.get("unit"),
+                d.get("norm_unit_price"),
+                d.get("norm_unit"),
+                d.get("norm_note"),
+                int(d["item_id"]) if d.get("item_id") is not None else None,
+                d.get("mapping_confidence"),
+                d.get("confidence"),
+                now,
+            )
+            for d in deals
+        ]
+        with connection_scope() as conn:
+            conn.executemany(
+                """
+                INSERT INTO flyer_deals (
+                    flyer_id, asset_id, store_id, page_index, title, description, price_text,
+                    deal_qty, deal_total, unit_price, unit,
+                    norm_unit_price, norm_unit, norm_note,
+                    item_id, mapping_confidence, confidence, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+            conn.commit()
+        return len(rows)
+
     # Back-compat alias (older code inserted a simplified "deals" list)
     def insert_deals(self, batch_id: int, store_id: int, deals: List[Dict[str, Any]]) -> int:
         """
@@ -536,7 +597,7 @@ class FlyersRepo:
         """
         if not deals:
             return 0
-        count = 0
+        rows: List[Dict[str, Any]] = []
         for d in deals:
             price = d.get("deal_total", None)
             if price is None:
@@ -547,19 +608,18 @@ class FlyersRepo:
                 deal_total = _parse_price_str(price)
             else:
                 deal_total = None
-            self.add_deal(
-                flyer_id=batch_id,
-                store_id=store_id,
-                page_index=d.get("page_index", None),
-                title=d.get("title", None),
-                description=d.get("description", None),
-                price_text=d.get("price_text", None),
-                deal_total=deal_total,
-                unit_price=d.get("unit_price", None),
-                unit=d.get("unit", None),
-            )
-            count += 1
-        return count
+            rows.append({
+                "flyer_id": batch_id,
+                "store_id": store_id,
+                "page_index": d.get("page_index", None),
+                "title": d.get("title", None),
+                "description": d.get("description", None),
+                "price_text": d.get("price_text", None),
+                "deal_total": deal_total,
+                "unit_price": d.get("unit_price", None),
+                "unit": d.get("unit", None),
+            })
+        return self.add_deals(rows)
 
     def list_deals_for_flyer(
         self,
@@ -604,7 +664,7 @@ class FlyersRepo:
             LIMIT ?
         """
 
-        with get_connection() as conn:
+        with connection_scope() as conn:
             conn.row_factory = sqlite3.Row
             try:
                 rows = conn.execute(sql_join, (int(flyer_id), int(limit))).fetchall()
@@ -698,7 +758,7 @@ class FlyersRepo:
         """
         args.append(int(limit))
 
-        with get_connection() as conn:
+        with connection_scope() as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(sql, args).fetchall()
 

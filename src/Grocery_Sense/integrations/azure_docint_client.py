@@ -29,6 +29,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -40,7 +41,7 @@ from azure.core.credentials import AzureKeyCredential
 from azure.core.exceptions import HttpResponseError, ServiceRequestError
 from rapidfuzz import fuzz, process
 
-from Grocery_Sense.data.connection import get_connection
+from Grocery_Sense.data.connection import connection_scope, get_connection
 from Grocery_Sense.data.repositories import items_repo as items_repo_module
 from Grocery_Sense.data.repositories.item_aliases_repo import ItemAliasesRepo
 from Grocery_Sense.data.repositories.stores_repo import create_store, list_stores
@@ -74,21 +75,36 @@ def _load_dotenv_once() -> None:
     _DOTENV_LOADED = True
 
     here = Path(__file__).resolve()
-    for parent in [here] + list(here.parents):
+    # .../src/Grocery_Sense/integrations/azure_docint_client.py -> parents[3] is the
+    # repo root. Bound the search there so an unrelated ancestor .env (e.g. another
+    # project's secrets) is never imported into this process.
+    repo_root = here.parents[3] if len(here.parents) > 3 else here.parents[-1]
+    # Build candidates list from here up to repo_root (inclusive)
+    candidates = []
+    for parent in here.parents:
+        candidates.append(parent)
+        if parent == repo_root:
+            break
+
+    # Traverse root-first so the repo-root .env wins over a nested one
+    for parent in reversed(candidates):
         candidate = parent / ".env"
         if candidate.exists():
             try:
-                for line in candidate.read_text(encoding="utf-8").splitlines():
-                    line = line.strip()
-                    if not line or line.startswith("#") or "=" not in line:
-                        continue
-                    k, _, v = line.partition("=")
-                    k = k.strip()
-                    v = v.strip().strip('"').strip("'")
-                    if k and k not in os.environ:
-                        os.environ[k] = v
-            except Exception:
-                pass
+                text = candidate.read_text(encoding="utf-8")
+            except OSError as e:
+                raise RuntimeError(
+                    f"Found .env at {candidate} but could not read it: {e}"
+                ) from e
+            for line in text.splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k and k not in os.environ:
+                    os.environ[k] = v
             return
 
 
@@ -113,7 +129,7 @@ def _compute_file_sha256(file_path: str | Path, chunk_size: int = 1024 * 1024) -
 
 def _find_receipt_by_file_hash(file_hash: str) -> Optional[int]:
     _ensure_dedupe_tables()
-    with get_connection() as conn:
+    with connection_scope() as conn:
         row = conn.execute(
             "SELECT receipt_id FROM receipt_file_hashes WHERE file_hash = ?",
             (file_hash,),
@@ -123,7 +139,7 @@ def _find_receipt_by_file_hash(file_hash: str) -> Optional[int]:
 
 def _find_receipt_by_signature(signature: str) -> Optional[int]:
     _ensure_dedupe_tables()
-    with get_connection() as conn:
+    with connection_scope() as conn:
         row = conn.execute(
             "SELECT receipt_id FROM receipt_signatures WHERE signature = ?",
             (signature,),
@@ -133,7 +149,7 @@ def _find_receipt_by_signature(signature: str) -> Optional[int]:
 
 def _link_hash_to_receipt(file_hash: str, receipt_id: int, file_path: str) -> None:
     _ensure_dedupe_tables()
-    with get_connection() as conn:
+    with connection_scope() as conn:
         conn.execute(
             """
             INSERT OR REPLACE INTO receipt_file_hashes (file_hash, receipt_id, file_path, created_at)
@@ -146,7 +162,7 @@ def _link_hash_to_receipt(file_hash: str, receipt_id: int, file_path: str) -> No
 
 def _link_signature_to_receipt(signature: str, receipt_id: int) -> None:
     _ensure_dedupe_tables()
-    with get_connection() as conn:
+    with connection_scope() as conn:
         conn.execute(
             """
             INSERT OR REPLACE INTO receipt_signatures (signature, receipt_id, created_at)
@@ -164,7 +180,7 @@ def _delete_receipt_cascade(receipt_id: int) -> None:
     _ensure_ingest_tables()
     _ensure_dedupe_tables()
 
-    with get_connection() as conn:
+    with connection_scope() as conn:
         # child -> parent order
         conn.execute("DELETE FROM prices WHERE receipt_id = ?;", (int(receipt_id),))
         conn.execute("DELETE FROM receipt_line_items WHERE receipt_id = ?;", (int(receipt_id),))
@@ -193,6 +209,24 @@ class IngestOutcome:
     duplicate_reason: Optional[str] = None  # "file_hash" | "signature"
     replaced_existing: bool = False
     existing_receipt_id: Optional[int] = None  # if duplicate, which one it matched
+
+
+def _retry_after_seconds(exc: object) -> Optional[float]:
+    """Parse Retry-After (delta-seconds) from an Azure error response, if present.
+    Returns None when the header is absent or non-numeric (e.g. HTTP-date form).
+    """
+    try:
+        response = getattr(exc, "response", None)
+        if response is None:
+            return None
+        headers = getattr(response, "headers", None) or {}
+        raw = headers.get("Retry-After") or headers.get("retry-after")
+        if raw is None:
+            return None
+        secs = float(str(raw).strip())
+        return secs if secs >= 0 else None
+    except (TypeError, ValueError):
+        return None
 
 
 class AzureReceiptClient:
@@ -224,6 +258,7 @@ class AzureReceiptClient:
         *,
         max_attempts: int = 3,
         base_delay: float = 2.0,
+        max_retry_after: float = 60.0,
     ) -> Tuple[str, Dict[str, Any]]:
         p = Path(file_path)
         if not p.exists():
@@ -253,13 +288,17 @@ class AzureReceiptClient:
                     raise
                 # Retriable: throttle (429) or server errors (5xx)
                 last_exc = exc
+                retry_after = _retry_after_seconds(exc)
 
             except ServiceRequestError as exc:
                 # Network-level transient error — always retriable
                 last_exc = exc
+                retry_after = None
 
             if attempt < max_attempts - 1:
-                delay = base_delay * (2 ** attempt)
+                backoff = base_delay * (2 ** attempt)
+                delay = max(backoff, retry_after) if retry_after is not None else backoff
+                delay = min(delay, max_retry_after)
                 time.sleep(delay)
 
         raise last_exc
@@ -401,25 +440,25 @@ def _get_or_create_store_id(
     known_stores: Optional[List[Any]] = None,
 ) -> int:
     merchant_name = (merchant_name or "").strip() or "Unknown Store"
-    stores = known_stores if known_stores is not None else list_stores(only_favorites=False, order_by_priority=True)
+    stores = known_stores if known_stores is not None else list_stores(only_favorites=False, order_by_priority=True, include_archived=True)
     if not stores:
         return int(create_store(name=merchant_name).id)
 
     store_names = [s.name for s in stores]
-    match = process.extractOne(merchant_name, store_names, scorer=fuzz.token_set_ratio)
+    # One scoring pass: process.extract returns (name, score, index) for all
+    # candidates; tie-break from that result instead of re-scoring every store.
+    results = process.extract(
+        merchant_name, store_names, scorer=fuzz.token_set_ratio, limit=len(store_names)
+    )
 
-    if match:
-        best_name, score, _ = match
-        if score >= threshold:
+    if results:
+        best_score = results[0][1]
+        if best_score >= threshold:
             # Tie-break by shortest matching name (most specific), then alphabetic,
             # for deterministic linking across syncs.
-            ties = [s for s in stores if fuzz.token_set_ratio(merchant_name, s.name) == score]
-            if ties:
-                ties.sort(key=lambda s: (len(s.name), s.name))
-                return int(ties[0].id)
-            for s in stores:
-                if s.name == best_name:
-                    return int(s.id)
+            ties = [stores[idx] for (_n, sc, idx) in results if sc == best_score]
+            ties.sort(key=lambda s: (len(s.name), s.name))
+            return int(ties[0].id)
 
     return int(create_store(name=merchant_name).id)
 
@@ -435,7 +474,7 @@ def _insert_receipt_row(
     image_confidence_1_5: Optional[int],
     azure_request_id: str,
 ) -> int:
-    with get_connection() as conn:
+    with connection_scope() as conn:
         cur = conn.execute(
             """
             INSERT INTO receipts (
@@ -465,7 +504,7 @@ def _insert_receipt_row(
 
 
 def _save_raw_json_row(receipt_id: int, operation_id: str, json_path: Path, raw_json_dict: Dict[str, Any]) -> None:
-    with get_connection() as conn:
+    with connection_scope() as conn:
         conn.execute(
             """
             INSERT OR REPLACE INTO receipt_raw_json (receipt_id, operation_id, json_path, raw_json, created_at)
@@ -520,7 +559,7 @@ def _insert_price_point(
     Inserts into prices, including optional normalization fields.
     Unit normalization schema is ensured by UnitNormalizationService.ensure_schema().
     """
-    with get_connection() as conn:
+    with connection_scope() as conn:
         conn.execute(
             """
             INSERT INTO prices (
@@ -562,7 +601,7 @@ def _insert_receipt_line_item(
     discount: Optional[float],
     confidence_1_5: Optional[int],
 ) -> None:
-    with get_connection() as conn:
+    with connection_scope() as conn:
         conn.execute(
             """
             INSERT INTO receipt_line_items (
@@ -665,11 +704,22 @@ def ingest_analyzed_receipt_into_db(
     else:
         # File mtime fallback gives a stable per-file date so re-ingest of the
         # same PDF yields the same signature even when Azure can't extract one.
+        # Use LOCAL date, not UTC: purchase_date is a calendar day on the
+        # receipt (the Azure-extracted path above is a bare local date), so a
+        # UTC stamp future-dates evening receipts for UTC-behind timezones.
         try:
             mtime = Path(file_path).stat().st_mtime
-            purchase_date = datetime.fromtimestamp(mtime, tz=timezone.utc).strftime("%Y-%m-%d")
+            purchase_date = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
         except Exception:
-            purchase_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            purchase_date = datetime.now().strftime("%Y-%m-%d")
+        # Disclose the inferred date: it feeds price-history windows, so a wrong
+        # date skews "usual price" / 6-month-low math. Don't pretend it's real.
+        import warnings
+        warnings.warn(
+            f"No transaction date on receipt '{file_path}'; using inferred date "
+            f"{purchase_date}. Price-history dating for this receipt is approximate.",
+            stacklevel=2,
+        )
 
     subtotal_val, subtotal_conf = _field_value(_pick_field(fields, ["Subtotal"]))
     tax_val, tax_conf = _field_value(_pick_field(fields, ["TotalTax", "Tax"]))
@@ -722,17 +772,24 @@ def ingest_analyzed_receipt_into_db(
             continue
 
         q_parsed = _safe_float(qty_val)
-        quantity = q_parsed if (q_parsed is not None and q_parsed > 0) else 1.0
+        qty_known = q_parsed is not None and q_parsed > 0
+        quantity = q_parsed if qty_known else 1.0
+        # OCR reported a quantity but it was unusable (<=0 / non-numeric): we
+        # default to 1, which distorts unit_price for weight-priced lines. Flag
+        # it rather than store a plausible-but-wrong per-unit price silently.
+        qty_reported_but_invalid = (qty_val is not None) and not qty_known
         unit_price = _currency_amount(unit_price_val)
         line_total = _currency_amount(total_price_val)
         discount = _currency_amount(discount_val)
 
+        if line_total is not None and line_total < 0:
+            line_total = None
+        if unit_price is not None and unit_price < 0:
+            unit_price = None
         if unit_price is None and line_total is not None and quantity:
             unit_price = float(line_total) / float(quantity)
         if line_total is None and unit_price is not None and quantity:
             line_total = float(unit_price) * float(quantity)
-        if unit_price is not None and unit_price < 0:
-            unit_price = None
 
         adj = deals.adjust(
             description=description,
@@ -745,6 +802,8 @@ def ingest_analyzed_receipt_into_db(
         unit_price = adj.unit_price
         line_total = adj.line_total
         deal_note = adj.deal_note
+        if qty_reported_but_invalid:
+            deal_note = f"{deal_note};qty_invalid_defaulted" if deal_note else "qty_invalid_defaulted"
 
         conf_candidates = [c for c in [desc_conf, qty_conf, unit_price_conf, total_price_conf, discount_conf] if isinstance(c, (int, float))]
         line_conf_float = (sum(float(x) for x in conf_candidates) / len(conf_candidates)) if conf_candidates else None
@@ -752,6 +811,10 @@ def ingest_analyzed_receipt_into_db(
 
         mapping = mapping_service.map_to_item(description)
         item_id, map_conf_1_5 = _upsert_item_from_mapping(description, mapping)
+        if not getattr(mapping, "item_id", None):
+            # A new item was just created — drop the cached candidate list so
+            # later lines in this receipt can fuzzy-match against it.
+            mapping_service.invalidate_choices()
 
         observed_unit = "each"
         guessed = unit_norm.guess_unit_from_text(description)
@@ -781,12 +844,17 @@ def ingest_analyzed_receipt_into_db(
             "norm": norm,
         })
 
+    # Persist all buffered auto-learned aliases in one transaction now, BEFORE
+    # the receipt BEGIN below — keeps alias writes out of the receipt
+    # transaction and avoids a per-matched-line commit during the loop above.
+    mapping_service.flush_learned_aliases()
+
     # PASS 2 (transactional): insert receipts row + raw_json + line_items + prices
     # + dedupe links in one atomic BEGIN/COMMIT.
     now_iso = _now_utc_iso()
     raw_json_str = json.dumps(analyze_result, ensure_ascii=False)
 
-    with get_connection() as conn:
+    with connection_scope() as conn:
         conn.execute("BEGIN;")
         try:
             cur = conn.execute(
@@ -907,7 +975,50 @@ def ingest_analyzed_receipt_into_db(
 # Public entrypoints
 # =============================================================================
 
+# Per-file-hash ingest locks: serialize concurrent imports of the SAME receipt
+# file (a double-click, or two import windows) so the check-then-insert dedupe
+# can't race. Without this, two threads can both pass the file-hash dedupe before
+# either inserts, spending two Azure calls and creating a duplicate receipt. The
+# loser now blocks, then sees the winner's committed hash and returns a clean
+# was_duplicate outcome. Single-process desktop app, so an in-process lock is
+# sufficient (a multi-process story is out of scope).
+_ingest_locks_guard = threading.Lock()
+_ingest_locks: Dict[str, threading.Lock] = {}
+
+
+def _lock_for_file_hash(file_hash: str) -> threading.Lock:
+    with _ingest_locks_guard:
+        lk = _ingest_locks.get(file_hash)
+        if lk is None:
+            lk = threading.Lock()
+            _ingest_locks[file_hash] = lk
+        return lk
+
+
 def ingest_receipt_file_outcome(
+    file_path: str | Path,
+    *,
+    raw_json_dir: str | Path = "azure_raw_json",
+    locale: str = "en-US",
+    store_match_threshold: int = 85,
+    replace_existing: bool = False,
+) -> IngestOutcome:
+    """Serialize same-file imports under a per-file-hash lock, then run the
+    dedupe + ingest pipeline (see _ingest_receipt_outcome_impl)."""
+    p = Path(file_path)
+    if not p.exists():
+        raise FileNotFoundError(str(p))
+    with _lock_for_file_hash(_compute_file_sha256(p)):
+        return _ingest_receipt_outcome_impl(
+            file_path=file_path,
+            raw_json_dir=raw_json_dir,
+            locale=locale,
+            store_match_threshold=store_match_threshold,
+            replace_existing=replace_existing,
+        )
+
+
+def _ingest_receipt_outcome_impl(
     file_path: str | Path,
     *,
     raw_json_dir: str | Path = "azure_raw_json",

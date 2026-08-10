@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+import sqlite3
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -11,6 +12,7 @@ from Grocery_Sense.data.repositories.prices_repo import (
     get_most_recent_prices_global_batch,
     get_price_stats_batch,
 )
+from Grocery_Sense.services.budget_service import get_gas_cost_per_km
 
 # Preferences (optional; code fails-safe if not present)
 try:
@@ -30,6 +32,37 @@ except Exception:  # pragma: no cover
 DEFAULT_EXCLUDE_SAFE_PHRASES: List[str] = [
     "olive oil",
 ]
+
+_FLAT_TRIP_PENALTY = 6.0  # fallback when distance_km is unknown
+
+
+def _compute_trip_penalty(store_a, store_b) -> float:
+    """
+    Return the cost penalty for adding a second stop.
+
+    If either store has distance_km set, we charge: 2 * max_distance * gas_cost_per_km
+    (round-trip to the farther store). Falls back to _FLAT_TRIP_PENALTY when
+    distance is unknown — the warning in BasketOptimizationResult discloses this.
+    """
+    try:
+        gas_rate = get_gas_cost_per_km()
+    except Exception:
+        gas_rate = 0.18
+
+    d_a = getattr(store_a, "distance_km", None)
+    d_b = getattr(store_b, "distance_km", None)
+
+    distances = [d for d in (d_a, d_b) if d is not None and d > 0]
+    if not distances:
+        return _FLAT_TRIP_PENALTY  # ponytail: flat until distances are entered
+
+    # Charge for a round-trip to the farther store (detour cost).
+    return 2.0 * max(distances) * gas_rate
+
+
+def _positive(v: object) -> bool:
+    """Return True only for a strictly positive numeric price."""
+    return isinstance(v, (int, float)) and v > 0
 
 def _norm(s: str) -> str:
     return (s or "").strip().lower()
@@ -136,6 +169,12 @@ class BasketOptimizationResult:
 
     warnings: List[str] = field(default_factory=list)
 
+    # Items that match a household HARD exclude / allergy. They are kept OUT of
+    # the optimized buy plan (not priced, not assigned, not in totals) and
+    # surfaced here so the UI can flag them rather than silently route the user
+    # to buy an allergen.
+    excluded_items: List[BasketItemPlan] = field(default_factory=list)
+
 
 # ---------------------------------------------------------------------------
 # Basket optimizer service
@@ -169,9 +208,18 @@ class BasketOptimizerService:
             mode = "two_store"
 
         basket_items = shopping_list_repo.list_active_items()
-        stores = stores_repo.list_stores()
+        all_stores = stores_repo.list_stores()
+        stores = [s for s in all_stores if s.shop_here]
 
         result = BasketOptimizationResult(mode=mode)
+
+        if not stores:
+            stores = all_stores
+            if stores:
+                result.warnings.append(
+                    "No stores marked 'Shop here' — using all stores. "
+                    "Use Store Settings to select where you shop."
+                )
 
         if not basket_items:
             result.warnings.append("Your active shopping list is empty.")
@@ -192,6 +240,7 @@ class BasketOptimizerService:
 
         # Normalize basket items and precompute stats
         normalized: List[BasketItemPlan] = []
+        excluded: List[BasketItemPlan] = []
         for it in basket_items:
             # shopping_list_repo returns ShoppingListItem dataclass (id, item_id, name, quantity, unit, etc.)
             try:
@@ -218,10 +267,27 @@ class BasketOptimizerService:
             if eff is not None:
                 self._apply_preference_annotations(plan, eff, safe_phrases)
 
+            # A household HARD exclude / allergy match is kept OUT of the buy
+            # plan entirely (not priced, not summed) — see M2 / CLAUDE.md
+            # "allergies are ALWAYS hard exclusions, household-wide".
+            if plan.hard_excluded:
+                excluded.append(plan)
+                continue
+
             normalized.append(plan)
 
+        result.excluded_items = excluded
+
         if not normalized:
-            result.warnings.append("No optimizable items found (missing item_id on shopping list entries).")
+            if excluded:
+                result.warnings.append(
+                    f"{len(excluded)} basket item(s) match a household allergy/hard-exclude "
+                    f"and were EXCLUDED from the buy plan: "
+                    f"{', '.join(p.name for p in excluded)}. "
+                    f"Remove them from your list or review the household allergy settings."
+                )
+            else:
+                result.warnings.append("No optimizable items found (missing item_id on shopping list entries).")
             return result
 
         all_item_ids = [p.item_id for p in normalized]
@@ -327,15 +393,37 @@ class BasketOptimizerService:
                 f"{unknown_total} basket item(s) have unknown prices in the DB. Totals are partial estimates."
             )
         if mode == "two_store" and len(chosen_store_ids) == 2:
-            result.warnings.append(
-                "Two-store mode may save more, but requires an extra trip (time + gas)."
-            )
+            store_objs = {int(s.id): s for s in stores}
+            s_a = store_objs.get(chosen_store_ids[0])
+            s_b = store_objs.get(chosen_store_ids[1])
+            d_a = getattr(s_a, "distance_km", None)
+            d_b = getattr(s_b, "distance_km", None)
+            distances = [d for d in (d_a, d_b) if d is not None and d > 0]
+            if distances:
+                try:
+                    gas_rate = get_gas_cost_per_km()
+                except Exception:
+                    gas_rate = 0.18
+                extra_km = 2.0 * max(distances)
+                extra_cost = extra_km * gas_rate
+                result.warnings.append(
+                    f"Two-store mode: extra ~{extra_km:.0f} km driving "
+                    f"(≈ ${extra_cost:.2f} gas at ${gas_rate:.2f}/km)."
+                )
+            else:
+                result.warnings.append(
+                    "Two-store mode may save more, but requires an extra trip (time + gas). "
+                    "Set store distance in Store Settings for a precise cost estimate."
+                )
 
-        # Preference warnings
-        hard_hits = sum(1 for it in normalized if it.hard_excluded)
-        if hard_hits:
+        # Preference warnings: hard-excluded / allergen items were pulled OUT of
+        # the optimized plan above; tell the user which and why.
+        if excluded:
             result.warnings.append(
-                f"{hard_hits} basket item(s) match a household HARD exclude (or allergy). Double-check these."
+                f"{len(excluded)} basket item(s) match a household allergy/hard-exclude "
+                f"and were EXCLUDED from the buy plan: "
+                f"{', '.join(p.name for p in excluded)}. "
+                f"Remove them from your list or review the household allergy settings."
             )
 
         # sort store plans by total
@@ -361,6 +449,23 @@ class BasketOptimizerService:
         soft_map = getattr(eff, "soft_excludes", {}) or {}
         hits: List[Tuple[str, List[str]]] = []
         starred = False
+
+        # Resolve household membership ONCE (invariant for this call) rather than
+        # per matched term. Compare by id (not name) — two members can share a name.
+        resolved = False
+        name_to_id: Dict[str, int] = {}
+        master_id = 0
+        if preferences_service is not None and config_store is not None:
+            try:
+                name_to_id = {
+                    getattr(mm, "name", ""): int(getattr(mm, "id", 0) or 0)
+                    for mm in config_store.list_members()  # type: ignore[attr-defined]
+                }
+                master_id = int(getattr(config_store.get_master_member(), "id", 0) or 0)  # type: ignore[attr-defined]
+                resolved = True
+            except Exception:
+                resolved = False
+
         for term, members in soft_map.items():
             if not term:
                 continue
@@ -368,16 +473,9 @@ class BasketOptimizerService:
                 mems = list(members or [])
                 hits.append((str(term), mems))
                 # star only if any SECONDARY member is involved
-                if preferences_service is not None:
-                    try:
-                        # Compare by id (not name) — two members can share a name.
-                        members_list = config_store.list_members()  # type: ignore[attr-defined]
-                        name_to_id = {getattr(mm, "name", ""): getattr(mm, "id", 0) for mm in members_list}
-                        master_id = getattr(config_store.get_master_member(), "id", 0)  # type: ignore[attr-defined]
-                        mem_ids = {int(name_to_id.get(m, -1)) for m in mems}
-                        if any(mid != int(master_id) for mid in mem_ids if mid >= 0):
-                            starred = True
-                    except Exception:
+                if resolved:
+                    mem_ids = {name_to_id.get(m, -1) for m in mems}
+                    if any(mid != master_id for mid in mem_ids if mid >= 0):
                         starred = True
                 else:
                     starred = True
@@ -404,26 +502,35 @@ class BasketOptimizerService:
         flyer = flyer_map.get((store_id, item_id))
         if flyer:
             unit_price, unit = flyer
-            return PricePick(store_id=store_id, store_name=store_name,
-                             unit_price=unit_price, unit=unit, source="flyer")
+            if _positive(unit_price):
+                return PricePick(store_id=store_id, store_name=store_name,
+                                 unit_price=unit_price, unit=unit, source="flyer")
 
         # 2) Most recent store-specific history
         pr = store_history.get((item_id, store_id))
-        if pr and getattr(pr, "unit_price", None) is not None:
+        if pr and _positive(getattr(pr, "unit_price", None)):
+            up = getattr(pr, "norm_unit_price", None)
+            if up is None:
+                up = pr.unit_price
+            unit = str(getattr(pr, "norm_unit", None) or getattr(pr, "unit", None) or "each").strip().lower()
             return PricePick(
                 store_id=store_id, store_name=store_name,
-                unit_price=float(pr.unit_price),
-                unit=str(getattr(pr, "unit", None) or "each").strip().lower(),
+                unit_price=float(up),
+                unit=unit,
                 source="history_store",
             )
 
         # 3) Global any-store fallback
         pr2 = global_history.get(item_id)
-        if pr2 and getattr(pr2, "unit_price", None) is not None:
+        if pr2 and _positive(getattr(pr2, "unit_price", None)):
+            up2 = getattr(pr2, "norm_unit_price", None)
+            if up2 is None:
+                up2 = pr2.unit_price
+            unit2 = str(getattr(pr2, "norm_unit", None) or getattr(pr2, "unit", None) or "each").strip().lower()
             return PricePick(
                 store_id=store_id, store_name=store_name,
-                unit_price=float(pr2.unit_price),
-                unit=str(getattr(pr2, "unit", None) or "each").strip().lower(),
+                unit_price=float(up2),
+                unit=unit2,
                 source="history_any",
             )
 
@@ -449,27 +556,36 @@ class BasketOptimizerService:
         flyer = flyer_map.get((store_id, item_id))
         if flyer:
             unit_price, unit = flyer
-            return PricePick(store_id=store_id, store_name=store_name, unit_price=unit_price, unit=unit, source="flyer")
+            if _positive(unit_price):
+                return PricePick(store_id=store_id, store_name=store_name, unit_price=unit_price, unit=unit, source="flyer")
 
         # 2) Most recent store-specific history
         pr = prices_repo.get_most_recent_price(item_id=item_id, store_id=store_id)
-        if pr and getattr(pr, "unit_price", None) is not None:
+        if pr and _positive(getattr(pr, "unit_price", None)):
+            up = getattr(pr, "norm_unit_price", None)
+            if up is None:
+                up = pr.unit_price
+            unit = str(getattr(pr, "norm_unit", None) or getattr(pr, "unit", None) or "each").strip().lower()
             return PricePick(
                 store_id=store_id,
                 store_name=store_name,
-                unit_price=float(pr.unit_price),
-                unit=str(getattr(pr, "unit", None) or "each").strip().lower(),
+                unit_price=float(up),
+                unit=unit,
                 source="history_store",
             )
 
         # 3) Most recent any-store history (global estimate fallback)
         pr2 = prices_repo.get_most_recent_price(item_id=item_id, store_id=None)
-        if pr2 and getattr(pr2, "unit_price", None) is not None:
+        if pr2 and _positive(getattr(pr2, "unit_price", None)):
+            up2 = getattr(pr2, "norm_unit_price", None)
+            if up2 is None:
+                up2 = pr2.unit_price
+            unit2 = str(getattr(pr2, "norm_unit", None) or getattr(pr2, "unit", None) or "each").strip().lower()
             return PricePick(
                 store_id=store_id,
                 store_name=store_name,
-                unit_price=float(pr2.unit_price),
-                unit=str(getattr(pr2, "unit", None) or "each").strip().lower(),
+                unit_price=float(up2),
+                unit=unit2,
                 source="history_any",
             )
 
@@ -629,8 +745,10 @@ class BasketOptimizerService:
                 if items_at_a == 0 or items_at_b == 0:
                     continue
 
-                # Two-store travel penalty + weaker favourite tie-breaker
-                score = total + (unknown * 5.0) + 6.0
+                # Two-store travel penalty: 2× round-trips to the extra store.
+                # Uses distance_km if set; falls back to flat $6 and discloses it.
+                trip_penalty = _compute_trip_penalty(store_by_id.get(a), store_by_id.get(b))
+                score = total + (unknown * 5.0) + trip_penalty
                 try:
                     if (
                         bool(getattr(store_by_id.get(a), "is_favorite", False))
@@ -665,7 +783,7 @@ class BasketOptimizerService:
           flyer_sources.valid_from/valid_to must include today
         """
         try:
-            from Grocery_Sense.data.connection import get_connection
+            from Grocery_Sense.data.connection import connection_scope
         except Exception:
             return {}
 
@@ -679,36 +797,45 @@ class BasketOptimizerService:
 
         today = _today_date().isoformat()
         store_ph = ",".join("?" * len(stores))
-        item_ph = ",".join("?" * len(items))
-        sql = (
-            "SELECT p.store_id, p.item_id, p.unit_price, COALESCE(p.unit, 'each') AS unit "
-            "FROM prices p "
-            "JOIN flyer_sources fs ON fs.id = p.flyer_source_id "
-            "WHERE p.source = 'flyer' "
-            f"  AND p.store_id IN ({store_ph}) "
-            f"  AND p.item_id  IN ({item_ph}) "
-            "  AND p.unit_price IS NOT NULL "
-            "  AND date(fs.valid_from) <= date(?) "
-            "  AND date(fs.valid_to)   >= date(?)"
-        )
 
         out: Dict[Tuple[int, int], Tuple[float, str]] = {}
+        # Chunk the item IN list so a large basket never blows past SQLite's
+        # variable limit (matches prices_repo._SQL_PARAM_CHUNK = 900). The old
+        # code inlined every item id in one query and swallowed the resulting
+        # "too many SQL variables" error, silently dropping all flyer prices.
+        CHUNK = 900
         try:
-            with get_connection() as conn:
-                rows = conn.execute(sql, (*stores, *items, today, today)).fetchall()
-        except Exception:
-            return {}
-
-        for r in rows:
-            try:
-                sid = int(r["store_id"])
-                iid = int(r["item_id"])
-                up = float(r["unit_price"])
-                unit = str(r["unit"] or "each").strip().lower()
-            except Exception:
-                continue
-            key = (sid, iid)
-            if key not in out or up < out[key][0]:
-                out[key] = (up, unit)
+            with connection_scope() as conn:
+                for i in range(0, len(items), CHUNK):
+                    chunk = items[i:i + CHUNK]
+                    item_ph = ",".join("?" * len(chunk))
+                    sql = (
+                        "SELECT p.store_id, p.item_id, p.unit_price, COALESCE(p.unit, 'each') AS unit "
+                        "FROM prices p "
+                        "JOIN flyer_sources fs ON fs.id = p.flyer_source_id "
+                        "WHERE p.source = 'flyer' "
+                        f"  AND p.store_id IN ({store_ph}) "
+                        f"  AND p.item_id  IN ({item_ph}) "
+                        "  AND p.unit_price IS NOT NULL "
+                        "  AND date(fs.valid_from) <= date(?) "
+                        "  AND date(fs.valid_to)   >= date(?)"
+                    )
+                    for r in conn.execute(sql, (*stores, *chunk, today, today)).fetchall():
+                        try:
+                            sid = int(r["store_id"])
+                            iid = int(r["item_id"])
+                            up = float(r["unit_price"])
+                            unit = str(r["unit"] or "each").strip().lower()
+                        except Exception:
+                            continue
+                        key = (sid, iid)
+                        if key not in out or up < out[key][0]:
+                            out[key] = (up, unit)
+        except sqlite3.OperationalError as e:
+            # Early-prototype DBs may not have a flyer_sources table yet; treat
+            # that as "no active flyer prices". Any OTHER operational error is a
+            # real fault and must surface (fail loud), not silently degrade.
+            if "flyer_sources" not in str(e).lower():
+                raise
 
         return out

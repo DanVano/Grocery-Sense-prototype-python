@@ -5,7 +5,7 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from Grocery_Sense.data.connection import get_connection
+from Grocery_Sense.data.connection import connection_scope, get_connection
 
 
 def _now_utc_iso() -> str:
@@ -26,15 +26,38 @@ def ensure_receipt_support_tables() -> None:
 # Queries (recent receipts, receipt details, line items, raw json)
 # -----------------------------------------------------------------------------
 
-def list_recent_receipts(limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+def list_recent_receipts(
+    limit: int = 50,
+    offset: int = 0,
+    store_id: Optional[int] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     """
     Returns recent receipts with store name + line item count.
+
+    Optional filters: store_id, and a purchase_date range (since/until, ISO
+    YYYY-MM-DD strings, inclusive).
     """
     ensure_receipt_support_tables()
 
-    with get_connection() as conn:
+    where: List[str] = []
+    params: List[Any] = []
+    if store_id is not None:
+        where.append("r.store_id = ?")
+        params.append(int(store_id))
+    if since:
+        where.append("r.purchase_date >= ?")
+        params.append(str(since))
+    if until:
+        where.append("r.purchase_date <= ?")
+        params.append(str(until))
+    where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    params.extend([int(limit), int(offset)])
+
+    with connection_scope() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT
                 r.id,
                 r.purchase_date,
@@ -53,10 +76,11 @@ def list_recent_receipts(limit: int = 50, offset: int = 0) -> List[Dict[str, Any
                 FROM receipt_line_items
                 GROUP BY receipt_id
             ) li ON li.receipt_id = r.id
+            {where_sql}
             ORDER BY r.id DESC
             LIMIT ? OFFSET ?;
             """,
-            (int(limit), int(offset)),
+            tuple(params),
         ).fetchall()
 
     out: List[Dict[str, Any]] = []
@@ -81,7 +105,7 @@ def list_recent_receipts(limit: int = 50, offset: int = 0) -> List[Dict[str, Any
 def get_receipt(receipt_id: int) -> Optional[Dict[str, Any]]:
     ensure_receipt_support_tables()
 
-    with get_connection() as conn:
+    with connection_scope() as conn:
         r = conn.execute(
             """
             SELECT
@@ -124,7 +148,7 @@ def get_receipt(receipt_id: int) -> Optional[Dict[str, Any]]:
 def list_receipt_line_items(receipt_id: int) -> List[Dict[str, Any]]:
     ensure_receipt_support_tables()
 
-    with get_connection() as conn:
+    with connection_scope() as conn:
         rows = conn.execute(
             """
             SELECT
@@ -171,7 +195,7 @@ def get_receipt_raw_json(receipt_id: int) -> Tuple[Optional[str], Optional[str]]
     """
     ensure_receipt_support_tables()
 
-    with get_connection() as conn:
+    with connection_scope() as conn:
         row = conn.execute(
             """
             SELECT raw_json, json_path
@@ -187,6 +211,58 @@ def get_receipt_raw_json(receipt_id: int) -> Tuple[Optional[str], Optional[str]]
 
 
 # -----------------------------------------------------------------------------
+# Spend aggregation
+# -----------------------------------------------------------------------------
+
+def get_month_spend(year_month: str) -> Dict[str, Any]:
+    """
+    Return total spend and receipt count for a given month ('YYYY-MM').
+    """
+    with connection_scope() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                COALESCE(SUM(total_amount), 0.0) AS total,
+                COUNT(*) AS receipt_count
+            FROM receipts
+            WHERE STRFTIME('%Y-%m', purchase_date) = ?
+              AND total_amount IS NOT NULL;
+            """,
+            (year_month,),
+        ).fetchone()
+    total = float(row[0]) if row and row[0] is not None else 0.0
+    count = int(row[1]) if row and row[1] is not None else 0
+    return {"month": year_month, "total": total, "receipt_count": count}
+
+
+def get_spend_trend(months: int = 12) -> List[Dict[str, Any]]:
+    """
+    Return monthly spend totals for the last N months, oldest first.
+    Each entry: {month: 'YYYY-MM', total: float, receipt_count: int}.
+    """
+    months = max(1, int(months))
+    with connection_scope() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                STRFTIME('%Y-%m', purchase_date) AS month,
+                COALESCE(SUM(total_amount), 0.0) AS total,
+                COUNT(*) AS receipt_count
+            FROM receipts
+            WHERE total_amount IS NOT NULL
+              AND purchase_date >= DATE('now', ? || ' months')
+            GROUP BY month
+            ORDER BY month ASC;
+            """,
+            (f"-{months}",),
+        ).fetchall()
+    return [
+        {"month": r[0], "total": float(r[1]), "receipt_count": int(r[2])}
+        for r in rows
+    ]
+
+
+# -----------------------------------------------------------------------------
 # Safe cascade delete + Undo backup/restore
 # -----------------------------------------------------------------------------
 
@@ -197,7 +273,7 @@ def delete_receipt_cascade(receipt_id: int) -> None:
     """
     ensure_receipt_support_tables()
 
-    with get_connection() as conn:
+    with connection_scope() as conn:
         # Child -> parent order
         conn.execute("DELETE FROM prices WHERE receipt_id = ?;", (int(receipt_id),))
         conn.execute("DELETE FROM receipt_line_items WHERE receipt_id = ?;", (int(receipt_id),))
@@ -220,8 +296,14 @@ def delete_receipt_with_backup(receipt_id: int) -> int:
         raise ValueError(f"Receipt not found: {receipt_id}")
 
     backup_json = json.dumps(snapshot, ensure_ascii=False)
+    # Write-time cap: if the snapshot (dominated by the OCR raw_json) exceeds the
+    # restore limit, drop the heavy blob so the backup stays restorable. Structured
+    # rows (line items / prices) are still preserved.
+    if len(backup_json) > _MAX_BACKUP_BYTES:
+        snapshot["raw_json"] = None
+        backup_json = json.dumps(snapshot, ensure_ascii=False)
 
-    with get_connection() as conn:
+    with connection_scope() as conn:
         cur = conn.execute(
             """
             INSERT INTO deleted_receipt_backups (original_receipt_id, deleted_at, backup_json)
@@ -238,12 +320,23 @@ def delete_receipt_with_backup(receipt_id: int) -> int:
         conn.execute("DELETE FROM receipt_file_hashes WHERE receipt_id = ?;", (int(receipt_id),))
         conn.execute("DELETE FROM receipt_signatures WHERE receipt_id = ?;", (int(receipt_id),))
         conn.execute("DELETE FROM receipts WHERE id = ?;", (int(receipt_id),))
+
+        # Retention: keep only the newest _MAX_BACKUPS_KEPT undo snapshots so the
+        # backup table (which embeds full OCR JSON) doesn't grow unbounded. Runs in
+        # the same transaction; the row just inserted has the highest id and is kept.
+        conn.execute(
+            "DELETE FROM deleted_receipt_backups WHERE id NOT IN ("
+            "SELECT id FROM deleted_receipt_backups ORDER BY id DESC LIMIT ?)",
+            (_MAX_BACKUPS_KEPT,),
+        )
         conn.commit()
 
     return backup_id
 
 
 _MAX_BACKUP_BYTES = 50 * 1024 * 1024
+# Keep only the most recent N undo snapshots (each may embed full OCR raw_json).
+_MAX_BACKUPS_KEPT = 50
 
 
 def restore_receipt_from_backup(backup_id: int) -> Tuple[int, List[Tuple[str, str]]]:
@@ -257,7 +350,7 @@ def restore_receipt_from_backup(backup_id: int) -> Tuple[int, List[Tuple[str, st
     """
     ensure_receipt_support_tables()
 
-    with get_connection() as conn:
+    with connection_scope() as conn:
         row = conn.execute(
             "SELECT backup_json FROM deleted_receipt_backups WHERE id = ?;",
             (int(backup_id),),
@@ -281,7 +374,7 @@ def restore_receipt_from_backup(backup_id: int) -> Tuple[int, List[Tuple[str, st
     rec = snapshot["receipt"]
     conflicts: List[Tuple[str, str]] = []
 
-    with get_connection() as conn:
+    with connection_scope() as conn:
         conn.execute("BEGIN;")
         try:
             cur = conn.execute(
@@ -425,7 +518,7 @@ def restore_receipt_from_backup(backup_id: int) -> Tuple[int, List[Tuple[str, st
 
 def list_deleted_backups(limit: int = 25) -> List[Dict[str, Any]]:
     ensure_receipt_support_tables()
-    with get_connection() as conn:
+    with connection_scope() as conn:
         rows = conn.execute(
             """
             SELECT id, original_receipt_id, deleted_at
@@ -450,7 +543,7 @@ def _snapshot_receipt(receipt_id: int) -> Optional[Dict[str, Any]]:
     """
     Snapshot receipt + derived tables into a JSON-able structure.
     """
-    with get_connection() as conn:
+    with connection_scope() as conn:
         rec = conn.execute(
             """
             SELECT

@@ -68,6 +68,7 @@ class ShoppingListService:
         planned_store_id: Optional[int] = None,
         notes: Optional[str] = None,
         added_by: Optional[str] = None,
+        added_by_member_id: Optional[int] = None,
         item_id: Optional[int] = None,
         auto_map: bool = False,
     ) -> int:
@@ -77,6 +78,7 @@ class ShoppingListService:
             unit=unit or "",
             notes=notes or "",
             added_by=added_by,
+            added_by_member_id=added_by_member_id,
             planned_store_id=planned_store_id,
             item_id=item_id,
         )

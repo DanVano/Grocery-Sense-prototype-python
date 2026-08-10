@@ -20,7 +20,10 @@ from Grocery_Sense.data.repositories.stores_repo import (
     delete_store,
     get_store_by_id,
     list_stores,
+    set_store_active,
     set_store_favorite,
+    set_store_shop_here,
+    update_store,
     update_store_address,
     upsert_store_from_flipp,
 )
@@ -252,3 +255,121 @@ class TestUpsertStoreFromFlipp:
         refreshed = get_store_by_id(original.id)
         assert refreshed.is_favorite is True
         assert refreshed.priority == 10
+
+
+# ---------------------------------------------------------------------------
+# shop_here
+# ---------------------------------------------------------------------------
+
+
+class TestShopHere:
+    def test_defaults_to_true(self, isolated_db):
+        s = create_store(name="New Store")
+        assert s.shop_here is True
+
+    def test_set_store_shop_here_toggles(self, isolated_db):
+        s = create_store(name="Costco")
+        set_store_shop_here(s.id, False)
+        refreshed = get_store_by_id(s.id)
+        assert refreshed.shop_here is False
+
+        set_store_shop_here(s.id, True)
+        refreshed2 = get_store_by_id(s.id)
+        assert refreshed2.shop_here is True
+
+    def test_migration_old_db_gets_column_with_default_1(self, isolated_db):
+        from Grocery_Sense.data.connection import get_connection
+        with get_connection() as c:
+            cols = {row[1] for row in c.execute("PRAGMA table_info(stores)").fetchall()}
+        assert "shop_here" in cols
+
+
+# ---------------------------------------------------------------------------
+# is_active / archive
+# ---------------------------------------------------------------------------
+
+
+class TestIsActive:
+    def test_new_store_defaults_active(self, isolated_db):
+        s = create_store(name="Fresh Store")
+        assert s.is_active is True
+
+    def test_set_store_active_archives(self, isolated_db):
+        s = create_store(name="To Archive")
+        set_store_active(s.id, False)
+        refreshed = get_store_by_id(s.id)
+        assert refreshed.is_active is False
+
+    def test_set_store_active_reactivates(self, isolated_db):
+        s = create_store(name="Was Archived")
+        set_store_active(s.id, False)
+        set_store_active(s.id, True)
+        assert get_store_by_id(s.id).is_active is True
+
+    def test_list_stores_excludes_archived_by_default(self, isolated_db):
+        active = create_store(name="Active")
+        archived = create_store(name="Archived")
+        set_store_active(archived.id, False)
+
+        visible = list_stores()
+        ids = {s.id for s in visible}
+        assert active.id in ids
+        assert archived.id not in ids
+
+    def test_list_stores_includes_archived_when_requested(self, isolated_db):
+        active = create_store(name="Active")
+        archived = create_store(name="Archived")
+        set_store_active(archived.id, False)
+
+        all_stores = list_stores(include_archived=True)
+        ids = {s.id for s in all_stores}
+        assert active.id in ids
+        assert archived.id in ids
+
+    def test_list_stores_only_favorites_and_active(self, isolated_db):
+        fav_active = create_store(name="FavActive", is_favorite=True)
+        fav_archived = create_store(name="FavArchived", is_favorite=True)
+        set_store_active(fav_archived.id, False)
+        _non_fav = create_store(name="NonFav")
+
+        result = list_stores(only_favorites=True)
+        ids = {s.id for s in result}
+        assert fav_active.id in ids
+        assert fav_archived.id not in ids
+
+
+# ---------------------------------------------------------------------------
+# update_store
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateStore:
+    def test_updates_all_editable_fields(self, isolated_db):
+        s = create_store(name="Old Name", city="Old City", priority=1)
+        update_store(
+            s.id,
+            name="New Name",
+            address="123 Main",
+            city="New City",
+            postal_code="V3J 0P6",
+            flipp_store_id="FL_99",
+            is_favorite=True,
+            priority=8,
+            notes="updated",
+        )
+        r = get_store_by_id(s.id)
+        assert r.name == "New Name"
+        assert r.address == "123 Main"
+        assert r.city == "New City"
+        assert r.postal_code == "V3J 0P6"
+        assert r.flipp_store_id == "FL_99"
+        assert r.is_favorite is True
+        assert r.priority == 8
+        assert r.notes == "updated"
+
+    def test_update_does_not_touch_is_active(self, isolated_db):
+        s = create_store(name="Will Archive")
+        set_store_active(s.id, False)
+        update_store(s.id, name="Still Archived", priority=0)
+        r = get_store_by_id(s.id)
+        assert r.is_active is False
