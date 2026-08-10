@@ -1,5 +1,13 @@
-# Grocery Sense Python Prototype
+# Grocery Sense — Python prototype (archived)
 
-This repository contains the original Python and Tkinter prototype for [Grocery Sense](https://github.com/DanVano/Grocery_Sense). I used it to validate the app's receipt ingestion, price tracking, product matching, shopping, and planning logic before rebuilding the project in C#/.NET 10 with MAUI Blazor.
+The original Python/Tkinter prototype of [Grocery Sense](https://github.com/DanVano/Grocery_Sense).
+I built this first to work out the hard parts — receipt ingestion, price history, fuzzy product
+matching across stores, and the shopping/trip planning logic — before committing to the real app.
 
-This version is kept as a development reference and is no longer the primary implementation. See [Grocery Sense](https://github.com/DanVano/Grocery_Sense) for the current app.
+Once the logic held up against real receipts, I rewrote the whole thing in C#/.NET 10 with MAUI
+Blazor so it could run on Android and iOS. The Python behaviour was carried over as golden-file
+test fixtures in the C# suite, so the port is verified against this version rather than just
+reimplemented.
+
+This repo is kept as a reference and is no longer developed. Go to
+**[Grocery_Sense](https://github.com/DanVano/Grocery_Sense)** for the current app.
